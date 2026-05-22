@@ -10,7 +10,7 @@
       "name": "wisp-design",
       "source": { "source": "github", "repo": "Samuel0101010/wisp-design" },
       "description": "Live-Frontend-Design für Claude Code. Click element → 3 distincte Varianten in echtem HMR → a11y-gated Accept → fs.writeFileSync.",
-      "version": "0.1.0-prerelease",
+      "version": "0.2.0-prerelease",
       "category": "developer-tools",
       "tags": ["live-edit", "frontend", "design", "ui-ux", "accessibility", "verification-gate", "claude-code"],
       "homepage": "https://github.com/Samuel0101010/wisp-design#readme",

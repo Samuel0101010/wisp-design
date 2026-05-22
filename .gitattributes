@@ -1,0 +1,14 @@
+# Normalize line endings to LF in the repo regardless of OS checkout.
+# Phase 3's source-edit engine requires byte-equivalence on inject/remove
+# roundtrip — drifting CRLF would silently break those contract tests.
+* text=auto eol=lf
+
+# Binary types (kept for completeness — none committed today, future-proof)
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.pdf binary

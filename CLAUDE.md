@@ -29,13 +29,13 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 
 ### Phase 1 — Local Bridge Server
 
-- [ ] `src/bridge/server.ts` — Plain Node HTTP + SSE auf auto-port
-- [ ] `src/bridge/port-discovery.ts` — finde freien Port, schreib `.wisp/live/port.lock`
-- [ ] `src/bridge/auth.ts` — Token (UUID) + Path-Traversal-Guard auf `/source`
-- [ ] Endpoints: `GET /live.js`, `GET /design-system.json?token=X`, `GET /source?token=X&path=…`, `POST /events`, `GET /events?token=X` (SSE), `GET /poll?token=X&timeout=270000&leaseMs=…`, `POST /poll`, `POST /annotation`, `GET /health`, `GET /status`, `GET /stop`
-- [ ] `src/bridge/csp.ts` — auto-patch CSP für dev-mode (`data-wisp-csp-original` für reversibel-remove)
-- [ ] Unit-Tests: token-required, path-traversal-blocked, long-poll-slicing (270s cap)
-- [ ] tag v0.2.0-prerelease + push
+- [x] `src/bridge/server.ts` — Plain Node HTTP + SSE auf auto-port
+- [x] `src/bridge/port-discovery.ts` — finde freien Port, schreib `.wisp/live/port.lock`
+- [x] `src/bridge/auth.ts` — Token (UUID) + Path-Traversal-Guard auf `/source`
+- [x] Endpoints: `GET /live.js`, `GET /design-system.json?token=X`, `GET /source?token=X&path=…`, `POST /events`, `GET /events?token=X` (SSE), `GET /poll?token=X&timeout=270000&leaseMs=…`, `POST /poll`, `POST /annotation`, `GET /health`, `GET /status`, `GET /stop`
+- [x] `src/bridge/csp.ts` — auto-patch CSP für dev-mode (`data-wisp-csp-original` für reversibel-remove)
+- [x] Unit-Tests: token-required, path-traversal-blocked, long-poll-slicing (270s cap)
+- [x] tag v0.2.0-prerelease + push
 
 ### Phase 2 — Browser Runtime (live.js)
 
@@ -260,7 +260,7 @@ mcp__ruflo__hooks_route { task: "<aktueller-task>" }
 | Phase | Status | Tag | Notes |
 |---|---|---|---|
 | 0 — Scaffolding & Manifest | completed | v0.1.0-prerelease | Doctor 7/7 OK; smoke tests green; dist 9.7 kB; private repo at Samuel0101010/wisp-design |
-| 1 — Local Bridge Server | pending | — | — |
+| 1 — Local Bridge Server | completed | v0.2.0-prerelease | 4-agent pipeline (architect→coder+security→tester); 11/11 endpoints; auth + 5-rule path-traversal-guard; SSE+long-poll(270s cap); 77/77 tests green |
 | 2 — Browser Runtime (live.js) | pending | — | — |
 | 3 — Source-Edit Engine | pending | — | — |
 | 4 — Agent-Loop + Skill-Korpus | pending | — | — |
