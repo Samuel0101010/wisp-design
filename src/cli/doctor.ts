@@ -1,0 +1,181 @@
+// wisp-design doctor — verifies that the plugin scaffolding is wired correctly.
+//
+// Phase 0 contract: exits 0 when manifest, hooks, command, license, and dist/ bundle
+// all exist and parse. Detects the common schema gotchas documented in the global
+// CLAUDE.md (plugin.json.repository must be string, marketplace.json plugins[].source
+// must be object, hooks.json needs three-layer matcher envelope).
+
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+
+export type CheckStatus = "ok" | "warn" | "fail";
+
+export interface DoctorCheck {
+  label: string;
+  status: CheckStatus;
+  detail?: string;
+}
+
+export interface DoctorResult {
+  checks: DoctorCheck[];
+  exitCode: number;
+}
+
+export interface DoctorOptions {
+  cwd: string;
+  fix: boolean;
+}
+
+function ok(label: string, detail?: string): DoctorCheck {
+  return detail !== undefined ? { label, status: "ok", detail } : { label, status: "ok" };
+}
+
+function warn(label: string, detail: string): DoctorCheck {
+  return { label, status: "warn", detail };
+}
+
+function fail(label: string, detail: string): DoctorCheck {
+  return { label, status: "fail", detail };
+}
+
+function readJson(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function checkPluginJson(cwd: string): DoctorCheck {
+  const path = resolve(cwd, ".claude-plugin/plugin.json");
+  if (!existsSync(path)) return fail(".claude-plugin/plugin.json", "missing");
+  try {
+    const data = readJson(path);
+    if (!isPlainObject(data)) return fail(".claude-plugin/plugin.json", "not a JSON object");
+    if (typeof data.name !== "string") return fail(".claude-plugin/plugin.json", "name missing");
+    if (typeof data.version !== "string") return fail(".claude-plugin/plugin.json", "version missing");
+    if (data.repository !== undefined && typeof data.repository !== "string") {
+      return fail(
+        ".claude-plugin/plugin.json",
+        "repository must be a STRING (npm-style { type, url } breaks /plugin install)",
+      );
+    }
+    return ok(".claude-plugin/plugin.json", `${data.name as string} v${data.version as string}`);
+  } catch (err) {
+    return fail(".claude-plugin/plugin.json", `parse error — ${(err as Error).message}`);
+  }
+}
+
+function checkMarketplaceJson(cwd: string): DoctorCheck {
+  const path = resolve(cwd, ".claude-plugin/marketplace.json");
+  if (!existsSync(path)) return fail(".claude-plugin/marketplace.json", "missing");
+  try {
+    const data = readJson(path);
+    if (!isPlainObject(data)) return fail(".claude-plugin/marketplace.json", "not a JSON object");
+    const plugins = data.plugins;
+    if (!Array.isArray(plugins) || plugins.length === 0) {
+      return fail(".claude-plugin/marketplace.json", "plugins[] missing or empty");
+    }
+    const first = plugins[0];
+    if (!isPlainObject(first)) return fail(".claude-plugin/marketplace.json", "plugins[0] not object");
+    const source = first.source;
+    if (!isPlainObject(source)) {
+      return fail(
+        ".claude-plugin/marketplace.json",
+        "plugins[0].source must be an OBJECT { source: 'github', repo: '…' }, not a string",
+      );
+    }
+    return ok(".claude-plugin/marketplace.json", `${plugins.length} plugin(s)`);
+  } catch (err) {
+    return fail(".claude-plugin/marketplace.json", `parse error — ${(err as Error).message}`);
+  }
+}
+
+function checkHooksJson(cwd: string): DoctorCheck {
+  const path = resolve(cwd, "hooks/hooks.json");
+  if (!existsSync(path)) return fail("hooks/hooks.json", "missing");
+  try {
+    const data = readJson(path);
+    if (!isPlainObject(data)) return fail("hooks/hooks.json", "not a JSON object");
+    const hooks = data.hooks;
+    if (!isPlainObject(hooks)) {
+      return fail("hooks/hooks.json", "top-level `hooks` key missing (Layer 1)");
+    }
+    const events = Object.keys(hooks);
+    if (events.length === 0) return fail("hooks/hooks.json", "no hook events defined");
+    for (const event of events) {
+      const arr = hooks[event];
+      if (!Array.isArray(arr)) {
+        return fail(
+          "hooks/hooks.json",
+          `hooks.${event} must be an ARRAY of matcher envelopes (Layer 2)`,
+        );
+      }
+      for (const envelope of arr) {
+        if (!isPlainObject(envelope) || !Array.isArray(envelope.hooks)) {
+          return fail(
+            "hooks/hooks.json",
+            `hooks.${event}[].hooks must be an array of { type, command } (Layer 3)`,
+          );
+        }
+      }
+    }
+    return ok("hooks/hooks.json", `${events.length} event(s): ${events.join(", ")}`);
+  } catch (err) {
+    return fail("hooks/hooks.json", `parse error — ${(err as Error).message}`);
+  }
+}
+
+function checkCommand(cwd: string): DoctorCheck {
+  const path = resolve(cwd, "commands/wisp-design.md");
+  if (!existsSync(path)) return fail("commands/wisp-design.md", "missing");
+  const content = readFileSync(path, "utf8");
+  if (!content.startsWith("---")) {
+    return warn("commands/wisp-design.md", "no frontmatter — Claude Code may treat as plain MD");
+  }
+  return ok("commands/wisp-design.md");
+}
+
+function checkLicense(cwd: string): DoctorCheck {
+  const path = resolve(cwd, "LICENSE");
+  if (!existsSync(path)) return fail("LICENSE", "missing");
+  const content = readFileSync(path, "utf8");
+  if (!/MIT License/i.test(content)) {
+    return warn("LICENSE", "not MIT — wisp-design ships MIT (Stagewise's AGPL is the anti-pattern)");
+  }
+  return ok("LICENSE", "MIT");
+}
+
+function checkDist(cwd: string): DoctorCheck {
+  const path = resolve(cwd, "dist/index.js");
+  if (!existsSync(path)) {
+    return fail("dist/index.js", "missing — run `npm run build` and commit dist/ (plugin clones have no build step)");
+  }
+  const size = statSync(path).size;
+  return ok("dist/index.js", `${(size / 1024).toFixed(1)} kB`);
+}
+
+function checkNodeVersion(): DoctorCheck {
+  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+  if (Number.isNaN(major) || major < 20) {
+    return fail("node version", `>=20 required, found ${process.versions.node}`);
+  }
+  return ok("node version", `v${process.versions.node}`);
+}
+
+export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
+  // `fix` is reserved for future autocorrect actions (e.g. rebuild dist, regenerate manifest);
+  // Phase 0 ships read-only checks. Reference it so the param doesn't trip noUnusedParameters.
+  void opts.fix;
+  const checks: DoctorCheck[] = [
+    checkNodeVersion(),
+    checkPluginJson(opts.cwd),
+    checkMarketplaceJson(opts.cwd),
+    checkHooksJson(opts.cwd),
+    checkCommand(opts.cwd),
+    checkLicense(opts.cwd),
+    checkDist(opts.cwd),
+  ];
+  const hasFail = checks.some((c) => c.status === "fail");
+  return { checks, exitCode: hasFail ? 1 : 0 };
+}

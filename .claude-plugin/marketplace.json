@@ -1,0 +1,31 @@
+{
+  "name": "wisp-design",
+  "description": "Live-Frontend-Design für Claude Code. Click element → 3 distincte Varianten in echtem HMR → a11y-gated Accept → fs.writeFileSync. Verification-Gate vor jedem Accept.",
+  "owner": {
+    "name": "Samuel Heftberger",
+    "url": "https://github.com/Samuel0101010"
+  },
+  "plugins": [
+    {
+      "name": "wisp-design",
+      "source": { "source": "github", "repo": "Samuel0101010/wisp-design" },
+      "description": "Live-Frontend-Design für Claude Code. Click element → 3 distincte Varianten in echtem HMR → a11y-gated Accept → fs.writeFileSync.",
+      "version": "0.1.0-prerelease",
+      "category": "developer-tools",
+      "tags": ["live-edit", "frontend", "design", "ui-ux", "accessibility", "verification-gate", "claude-code"],
+      "homepage": "https://github.com/Samuel0101010/wisp-design#readme",
+      "license": "MIT",
+      "keywords": [
+        "claude-code",
+        "frontend",
+        "design",
+        "live-edit",
+        "ui",
+        "ux",
+        "accessibility",
+        "verification-gate",
+        "anti-slop"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+# Dependencies & build output
+node_modules/
+build/
+coverage/
+*.tsbuildinfo
+# dist/ is committed because the Claude Code plugin distribution
+# ships it as the runnable bundle. Built by `npm run build` and
+# verified by CI on every push.
+
+# Logs & caches
+*.log
+.cache/
+tmp/
+.npm/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local-only Claude / agent tooling — never commit
+.claude/settings.local.json
+.claude/wisp-design/
+.claude/wisp-design.log
+
+# Per-project plugin state (writes by `/wisp-design live`) — local-only
+.wisp/
+
+# Ruflo / claude-flow local state (NOT part of this project)
+.swarm/
+.claude-flow/
+.hive-mind/
+agentdb.rvf
+agentdb.rvf.lock
+*.rvf
+*.rvf.lock
+
+# Source PNG masters — the trimmed, transparent versions in docs/assets/
+# are the canonical ones shipped with the repo. Keep originals out of git.
+/WISP_Figur.png
+/WISP_Schriftzug.png
+
+# Research artifacts stay in-repo for now (private repo); reconsider before public launch
+# research/
+
+# Local-only settings in general
+*.local.json
+*.local.yml
+
+# Test scratch
+.tmp-test/
+
+# Playwright artifacts (we only depend on it as optionalDep for CI screenshots)
+test-results/
+playwright-report/
