@@ -15,17 +15,17 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 
 ### Phase 0 — Scaffolding & Manifest
 
-- [ ] `package.json` mit `tsup`, `zod`, `vitest`, `@types/node@20`, ESM
-- [ ] `tsconfig.json` strict
-- [ ] `tsup.config.ts` → single bundled `dist/index.js`
-- [ ] `.claude-plugin/plugin.json` (repository=**string**, hooks 3-layer schema — siehe global CLAUDE.md)
-- [ ] `.claude-plugin/marketplace.json` (plugins[].source als **object** `{source:"github",repo:"..."}`)
-- [ ] `hooks/hooks.json` (3-Layer-Shape mit matcher-envelope)
-- [ ] `commands/wisp-design.md` als Top-Level-Command
-- [ ] `LICENSE` MIT
-- [ ] `.gitignore` (siehe `wisp-design/.gitignore`; **dist/ NICHT ignored**)
-- [ ] `wisp-design doctor` CLI gibt OK zurück
-- [ ] gh repo create wisp-design --private + initial commit + push + tag v0.1.0-prerelease
+- [x] `package.json` mit `tsup`, `zod`, `vitest`, `@types/node@20`, ESM
+- [x] `tsconfig.json` strict
+- [x] `tsup.config.ts` → single bundled `dist/index.js`
+- [x] `.claude-plugin/plugin.json` (repository=**string**, hooks 3-layer schema — siehe global CLAUDE.md)
+- [x] `.claude-plugin/marketplace.json` (plugins[].source als **object** `{source:"github",repo:"..."}`)
+- [x] `hooks/hooks.json` (3-Layer-Shape mit matcher-envelope)
+- [x] `commands/wisp-design.md` als Top-Level-Command
+- [x] `LICENSE` MIT
+- [x] `.gitignore` (siehe `wisp-design/.gitignore`; **dist/ NICHT ignored**)
+- [x] `wisp-design doctor` CLI gibt OK zurück
+- [x] gh repo create wisp-design --private + initial commit + push + tag v0.1.0-prerelease
 
 ### Phase 1 — Local Bridge Server
 
@@ -259,7 +259,7 @@ mcp__ruflo__hooks_route { task: "<aktueller-task>" }
 
 | Phase | Status | Tag | Notes |
 |---|---|---|---|
-| 0 — Scaffolding & Manifest | pending | — | — |
+| 0 — Scaffolding & Manifest | completed | v0.1.0-prerelease | Doctor 7/7 OK; smoke tests green; dist 9.7 kB; private repo at Samuel0101010/wisp-design |
 | 1 — Local Bridge Server | pending | — | — |
 | 2 — Browser Runtime (live.js) | pending | — | — |
 | 3 — Source-Edit Engine | pending | — | — |
