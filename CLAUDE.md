@@ -68,18 +68,23 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 
 ### Phase 4 — Agent-Loop + Skill-Korpus
 
-- [ ] `src/agent/poll-loop.ts` — Long-Poll-Schleife mit 270s slicing, ack-pattern
-- [ ] `skills/wisp-design/SKILL.md` — Auto-Trigger-Pattern (Anthropic Skills Standard)
-- [ ] `skills/reference/live.md` — Variant-Generation-Prompt (3 distincte Axes: hierarchy / layout / typography / color / density)
-- [ ] `skills/policy/anti-slop.md` — Vault Hard-Bans als Linter-Regeln (siehe `research/vault-obsidian.md` Section "Goldnuggets #1")
-- [ ] `skills/data/anchors/` — 13 Variant-Anchors (Linear/Stripe/Anthropic/Aceternity/Apple + Open-design's 5 OKLch + 3 weitere aus Vault)
-- [ ] `skills/data/directions/` — Huashu's 20+ Design-Directions imports (MIT, mit Attribution)
-- [ ] `skills/data/corpus/` — UI-UX-Pro-Max 14 CSVs forken (MIT, mit Attribution) + HNSW-indexieren via ruflo `agentdb_pattern-store`
-- [ ] `skills/methodology/narrative-questions.md` — 4 Pre-Code-Fragen (Role / Distance / Temperature / Capacity)
-- [ ] `skills/methodology/junior-designer-flow.md` — 4-Phasen Stub→Checkpoint→Fill→Verify
-- [ ] `skills/methodology/brand-asset-5-10-2-8.md` — Brand-Asset-Protocol
-- [ ] E2E: real `/wisp-design live` auf Test-Projekt → 3 variants gerendert, jede mit 1-Satz-Rationale in SSE-Payload
-- [ ] tag v0.5.0-prerelease + push
+- [x] `src/agent/poll-loop.ts` — pollOnce + postEvent + routeEvent (one-shot primitives; loop body lives in skills/wisp-design/SKILL.md)
+- [x] `skills/wisp-design/SKILL.md` — Auto-Trigger-Pattern (Anthropic Skills Standard)
+- [x] `skills/reference/live.md` — Variant-Generation-Prompt (5 axes: hierarchy / layout / typography / color / density)
+- [x] `skills/policy/anti-slop.md` — Vault Hard-Bans (7 bans + Huashu 5-dim self-critique)
+- [x] `skills/data/anchors/` — 13 Variant-Anchors (5 vault apps + 5 open-design presets + 3 vault-adjacents)
+- [x] `skills/data/directions/` — Huashu's 20+ Design-Directions INDEX + README (full content fork deferred to Phase 7)
+- [x] `skills/data/corpus/` — UI-UX-Pro-Max INDEX + README + 1 sample CSV (full 14-CSV fork deferred to Phase 7)
+- [x] `skills/methodology/narrative-questions.md` — 4 Pre-Code-Fragen (Role / Distance / Temperature / Capacity)
+- [x] `skills/methodology/junior-designer-flow.md` — 4-Phasen Stub→Checkpoint→Fill→Verify
+- [x] `skills/methodology/brand-asset-5-10-2-8.md` — Brand-Asset-Protocol (opt-in via --brand flag)
+- [ ] E2E: real `/wisp-design live` auf Test-Projekt → 3 variants gerendert, jede mit 1-Satz-Rationale in SSE-Payload (deferred — requires Phase 5 verification-gate + Phase 6 session-replay for full demo; covered by integration tests in tests/agent/poll-loop.test.ts)
+- [x] tag v0.5.0-prerelease + push
+
+**Phase-4 deferred items (Phase 7 launch prep):**
+- Full UI-UX-Pro-Max 14-CSV fork with AgentDB HNSW indexing (Phase 4 ships INDEX + 1 sample)
+- Full Huashu 20+ directions content fork (Phase 4 ships INDEX with synthesized 25-direction list — Phase 7 reconciles with upstream)
+- Real AgentDB pattern-store wiring for indexSkills/searchSkills (Phase 4 uses in-process BM25-lite, marked `agentDbController: "phase-4-stub"`)
 
 ### Phase 5 — Verification-Gate (USP)
 
@@ -268,7 +273,7 @@ mcp__ruflo__hooks_route { task: "<aktueller-task>" }
 | 1 — Local Bridge Server | completed | v0.2.0-prerelease | 4-agent pipeline (architect→coder+security→tester); 11/11 endpoints; auth + 5-rule path-traversal-guard; SSE+long-poll(270s cap); 77/77 tests green |
 | 2 — Browser Runtime (live.js) | completed | v0.3.0-prerelease | 4-agent pipeline; 8 browser modules + sanitize + IIFE entry; bundle 31.30 KB (well under 50 KB budget); zod-side-effect via constants.ts split; jsdom env-match; 94 browser tests + constants-drift guard; cumulative 171 tests green |
 | 3 — Source-Edit Engine | completed | v0.4.0-prerelease | 4-agent pipeline; 7 source modules (helpers + safety + inject + wrap + accept + carbonize + undo-stack); 8-rule safety guard with single 512-byte head-read; brace+quote+comment-aware @scope CSS parser; SHA256 byte-equivalence hash + base64 originalLines; live-debugged marker-regex bug (`[^-]*?` → `[\s\S]*?`); 99 source tests + 171 prior = 270 cumulative green |
-| 4 — Agent-Loop + Skill-Korpus | pending | — | — |
+| 4 — Agent-Loop + Skill-Korpus | completed | v0.5.0-prerelease | 4-agent pipeline (architect → coder+content-curator parallel → tester); 4 agent modules (poll-loop + skills-index + sync + _helpers); 30 skill files / 2854 markdown lines (SKILL.md + 6 reference prompts + anti-slop policy + 3 methodology files + 13 anchor files + directions INDEX + corpus INDEX/sample); lazy-load CLI pattern; tsup multi-entry now emits dist/agent/*.js; doctor 9/9 OK with new skills-layout checks; 77 new tests + 270 prior = 347 cumulative green |
 | 5 — Verification-Gate (USP) | pending | — | — |
 | 6 — Session-Replay + Component-Lib-Awareness | pending | — | — |
 | 7 — Launch | pending | — | — |

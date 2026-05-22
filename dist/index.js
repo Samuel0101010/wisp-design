@@ -124,6 +124,37 @@ function checkDist(cwd) {
   const size = statSync(path).size;
   return ok("dist/index.js", `${(size / 1024).toFixed(1)} kB`);
 }
+function checkSkillsLayout(cwd) {
+  const root = resolve(cwd, "skills");
+  if (!existsSync(root)) {
+    return warn("skills/", "missing \u2014 Phase 4 corpus not yet committed");
+  }
+  const expectedDirs = [
+    "wisp-design",
+    "reference",
+    "policy",
+    "methodology",
+    "data"
+  ];
+  const missing = [];
+  for (const d of expectedDirs) {
+    if (!existsSync(resolve(root, d))) missing.push(d);
+  }
+  if (missing.length > 0) {
+    return warn("skills/", `missing sub-dirs: ${missing.join(", ")}`);
+  }
+  return ok("skills/", `${expectedDirs.length} sub-dirs present`);
+}
+function checkSkillManifest(cwd) {
+  const path = resolve(cwd, "skills/wisp-design/SKILL.md");
+  if (!existsSync(path)) {
+    return warn(
+      "skills/wisp-design/SKILL.md",
+      "missing \u2014 Phase 4 auto-trigger skill not yet committed"
+    );
+  }
+  return ok("skills/wisp-design/SKILL.md");
+}
 function checkNodeVersion() {
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
   if (Number.isNaN(major) || major < 20) {
@@ -140,7 +171,9 @@ async function runDoctor(opts) {
     checkHooksJson(opts.cwd),
     checkCommand(opts.cwd),
     checkLicense(opts.cwd),
-    checkDist(opts.cwd)
+    checkDist(opts.cwd),
+    checkSkillsLayout(opts.cwd),
+    checkSkillManifest(opts.cwd)
   ];
   const hasFail = checks.some((c) => c.status === "fail");
   return { checks, exitCode: hasFail ? 1 : 0 };
@@ -189,17 +222,20 @@ function printHelp() {
       "jedem Accept.",
       "",
       "Usage:",
-      "  wisp-design doctor [--fix]        Verify manifest, hooks, build (Phase 0 gate)",
-      "  wisp-design live [--port N]       Boot bridge + inject script. (Phase 1+, stub)",
-      "  wisp-design init                  Project setup wizard. (Phase 4, stub)",
-      "  wisp-design audit [--strict]      Pre-commit a11y + anti-slop linter. (Phase 5, stub)",
-      "  wisp-design history [--task ID]   Replay a session log. (Phase 6, stub)",
-      "  wisp-design tokens extract        Sample computed styles \u2192 design-tokens.json. (Phase 4, stub)",
-      "  wisp-design sync --from <path>    Sync vault pattern-docs into skills/. (Phase 4, stub)",
-      "  wisp-design verify-spec <spec>    Test a verify-spec against the workspace. (Phase 5, stub)",
-      "  wisp-design hook <name>           Internal hook entry (called by hooks/hooks.json)",
-      "  wisp-design --version             Print version",
-      "  wisp-design --help                Print this help",
+      "  wisp-design doctor [--fix]                Verify manifest, hooks, build (Phase 0 gate)",
+      "  wisp-design live [--port N]               Boot bridge + inject script. (Phase 1+, stub)",
+      "  wisp-design init                          Project setup wizard. (Phase 4, stub)",
+      "  wisp-design poll-once [--timeout N]       Fetch one batch of bridge events. (Phase 4)",
+      "  wisp-design post-event --kind K --payload <json>  Push event to bridge. (Phase 4)",
+      "  wisp-design skills <index|search> [args]  Index/query skills corpus. (Phase 4)",
+      "  wisp-design sync --from <vault-path>      Sync vault pattern-docs into skills/. (Phase 4)",
+      "  wisp-design audit [--strict]              Pre-commit a11y + anti-slop linter. (Phase 5, stub)",
+      "  wisp-design history [--task ID]           Replay a session log. (Phase 6, stub)",
+      "  wisp-design tokens extract                Sample computed styles \u2192 design-tokens.json. (Phase 4, stub)",
+      "  wisp-design verify-spec <spec>            Test a verify-spec against the workspace. (Phase 5, stub)",
+      "  wisp-design hook <name>                   Internal hook entry (called by hooks/hooks.json)",
+      "  wisp-design --version                     Print version",
+      "  wisp-design --help                        Print this help",
       "",
       "Hook subcommands (internal):",
       "  user-prompt-submit  Inject 4 Narrative Questions on UI-page intent (Phase 4)",
@@ -252,8 +288,37 @@ ${out.exitCode === 0 ? "wisp-design doctor: OK" : "wisp-design doctor: FAIL"}
   if (cmd === "audit") return notImplemented("audit", "5");
   if (cmd === "history") return notImplemented("history", "6");
   if (cmd === "tokens") return notImplemented("tokens", "4");
-  if (cmd === "sync") return notImplemented("sync", "4");
   if (cmd === "verify-spec") return notImplemented("verify-spec", "5");
+  const lazyLoad = async (rel) => {
+    const spec = rel;
+    try {
+      return await import(spec);
+    } catch {
+      return null;
+    }
+  };
+  const callRunner = async (mod, fn, args, phaseName) => {
+    if (mod === null) return notImplemented(phaseName, "4");
+    const runner = mod[fn];
+    if (typeof runner !== "function") return notImplemented(phaseName, "4");
+    return runner(args);
+  };
+  if (cmd === "poll-once") {
+    const mod = await lazyLoad("./agent/poll-loop.js");
+    return callRunner(mod, "runPollOnce", rest, "poll-once");
+  }
+  if (cmd === "post-event") {
+    const mod = await lazyLoad("./agent/poll-loop.js");
+    return callRunner(mod, "runPostEvent", rest, "post-event");
+  }
+  if (cmd === "skills") {
+    const mod = await lazyLoad("./agent/skills-index.js");
+    return callRunner(mod, "runSkills", rest, "skills");
+  }
+  if (cmd === "sync") {
+    const mod = await lazyLoad("./agent/sync.js");
+    return callRunner(mod, "runSync", rest, "sync");
+  }
   process.stderr.write(`wisp-design: unknown command "${cmd}". Try --help.
 `);
   return 1;

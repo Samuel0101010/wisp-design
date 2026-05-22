@@ -155,6 +155,42 @@ function checkDist(cwd: string): DoctorCheck {
   return ok("dist/index.js", `${(size / 1024).toFixed(1)} kB`);
 }
 
+function checkSkillsLayout(cwd: string): DoctorCheck {
+  // Phase 4 — `skills/` may be partially populated while content-curator's
+  // commit is still landing. Missing slices are WARN (not FAIL) so a Phase 0
+  // checkout doesn't trip the gate.
+  const root = resolve(cwd, "skills");
+  if (!existsSync(root)) {
+    return warn("skills/", "missing — Phase 4 corpus not yet committed");
+  }
+  const expectedDirs = [
+    "wisp-design",
+    "reference",
+    "policy",
+    "methodology",
+    "data",
+  ];
+  const missing: string[] = [];
+  for (const d of expectedDirs) {
+    if (!existsSync(resolve(root, d))) missing.push(d);
+  }
+  if (missing.length > 0) {
+    return warn("skills/", `missing sub-dirs: ${missing.join(", ")}`);
+  }
+  return ok("skills/", `${expectedDirs.length} sub-dirs present`);
+}
+
+function checkSkillManifest(cwd: string): DoctorCheck {
+  const path = resolve(cwd, "skills/wisp-design/SKILL.md");
+  if (!existsSync(path)) {
+    return warn(
+      "skills/wisp-design/SKILL.md",
+      "missing — Phase 4 auto-trigger skill not yet committed",
+    );
+  }
+  return ok("skills/wisp-design/SKILL.md");
+}
+
 function checkNodeVersion(): DoctorCheck {
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
   if (Number.isNaN(major) || major < 20) {
@@ -175,6 +211,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checkCommand(opts.cwd),
     checkLicense(opts.cwd),
     checkDist(opts.cwd),
+    checkSkillsLayout(opts.cwd),
+    checkSkillManifest(opts.cwd),
   ];
   const hasFail = checks.some((c) => c.status === "fail");
   return { checks, exitCode: hasFail ? 1 : 0 };

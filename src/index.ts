@@ -32,17 +32,20 @@ function printHelp(): void {
       "jedem Accept.",
       "",
       "Usage:",
-      "  wisp-design doctor [--fix]        Verify manifest, hooks, build (Phase 0 gate)",
-      "  wisp-design live [--port N]       Boot bridge + inject script. (Phase 1+, stub)",
-      "  wisp-design init                  Project setup wizard. (Phase 4, stub)",
-      "  wisp-design audit [--strict]      Pre-commit a11y + anti-slop linter. (Phase 5, stub)",
-      "  wisp-design history [--task ID]   Replay a session log. (Phase 6, stub)",
-      "  wisp-design tokens extract        Sample computed styles → design-tokens.json. (Phase 4, stub)",
-      "  wisp-design sync --from <path>    Sync vault pattern-docs into skills/. (Phase 4, stub)",
-      "  wisp-design verify-spec <spec>    Test a verify-spec against the workspace. (Phase 5, stub)",
-      "  wisp-design hook <name>           Internal hook entry (called by hooks/hooks.json)",
-      "  wisp-design --version             Print version",
-      "  wisp-design --help                Print this help",
+      "  wisp-design doctor [--fix]                Verify manifest, hooks, build (Phase 0 gate)",
+      "  wisp-design live [--port N]               Boot bridge + inject script. (Phase 1+, stub)",
+      "  wisp-design init                          Project setup wizard. (Phase 4, stub)",
+      "  wisp-design poll-once [--timeout N]       Fetch one batch of bridge events. (Phase 4)",
+      "  wisp-design post-event --kind K --payload <json>  Push event to bridge. (Phase 4)",
+      "  wisp-design skills <index|search> [args]  Index/query skills corpus. (Phase 4)",
+      "  wisp-design sync --from <vault-path>      Sync vault pattern-docs into skills/. (Phase 4)",
+      "  wisp-design audit [--strict]              Pre-commit a11y + anti-slop linter. (Phase 5, stub)",
+      "  wisp-design history [--task ID]           Replay a session log. (Phase 6, stub)",
+      "  wisp-design tokens extract                Sample computed styles → design-tokens.json. (Phase 4, stub)",
+      "  wisp-design verify-spec <spec>            Test a verify-spec against the workspace. (Phase 5, stub)",
+      "  wisp-design hook <name>                   Internal hook entry (called by hooks/hooks.json)",
+      "  wisp-design --version                     Print version",
+      "  wisp-design --help                        Print this help",
       "",
       "Hook subcommands (internal):",
       "  user-prompt-submit  Inject 4 Narrative Questions on UI-page intent (Phase 4)",
@@ -97,8 +100,54 @@ async function main(): Promise<number> {
   if (cmd === "audit") return notImplemented("audit", "5");
   if (cmd === "history") return notImplemented("history", "6");
   if (cmd === "tokens") return notImplemented("tokens", "4");
-  if (cmd === "sync") return notImplemented("sync", "4");
   if (cmd === "verify-spec") return notImplemented("verify-spec", "5");
+
+  // Phase 4 — agent-loop CLI primitives. The implementations live in
+  // src/agent/*.ts (coder-owned, parallel commit). We resolve them at
+  // runtime via a string-variable import so TypeScript does NOT try to
+  // verify the path at compile time. The contract surface lives in
+  // src/contracts/agent.ts; when coder's commit lands, the runtime
+  // import succeeds and the CLI wires up automatically.
+  const lazyLoad = async (
+    rel: string,
+  ): Promise<Record<string, unknown> | null> => {
+    // Indirect through a variable so tsc/TS-bundler resolution does not
+    // statically require the target module to exist.
+    const spec = rel;
+    try {
+      return (await import(spec)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  };
+  const callRunner = async (
+    mod: Record<string, unknown> | null,
+    fn: string,
+    args: string[],
+    phaseName: string,
+  ): Promise<number> => {
+    if (mod === null) return notImplemented(phaseName, "4");
+    const runner = mod[fn];
+    if (typeof runner !== "function") return notImplemented(phaseName, "4");
+    return (runner as (a: string[]) => Promise<number>)(args);
+  };
+
+  if (cmd === "poll-once") {
+    const mod = await lazyLoad("./agent/poll-loop.js");
+    return callRunner(mod, "runPollOnce", rest, "poll-once");
+  }
+  if (cmd === "post-event") {
+    const mod = await lazyLoad("./agent/poll-loop.js");
+    return callRunner(mod, "runPostEvent", rest, "post-event");
+  }
+  if (cmd === "skills") {
+    const mod = await lazyLoad("./agent/skills-index.js");
+    return callRunner(mod, "runSkills", rest, "skills");
+  }
+  if (cmd === "sync") {
+    const mod = await lazyLoad("./agent/sync.js");
+    return callRunner(mod, "runSync", rest, "sync");
+  }
 
   process.stderr.write(`wisp-design: unknown command "${cmd}". Try --help.\n`);
   return 1;

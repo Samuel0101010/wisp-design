@@ -12,7 +12,16 @@ import { defineConfig } from "tsup";
 
 export default defineConfig([
   {
-    entry: { index: "src/index.ts" },
+    entry: {
+      index: "src/index.ts",
+      // Phase 4 agent runners — emitted as separate ESM modules so the
+      // dispatcher's `await import("./agent/poll-loop.js")` resolves at
+      // runtime against `dist/agent/*.js`. The indirect-string-import in
+      // src/index.ts prevents tsup from inlining them into index.js.
+      "agent/poll-loop": "src/agent/poll-loop.ts",
+      "agent/skills-index": "src/agent/skills-index.ts",
+      "agent/sync": "src/agent/sync.ts",
+    },
     format: ["esm"],
     target: "node20",
     platform: "node",
