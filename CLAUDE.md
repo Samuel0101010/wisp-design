@@ -39,16 +39,16 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 
 ### Phase 2 — Browser Runtime (live.js)
 
-- [ ] `src/browser/state-machine.ts` — IDLE → PICKING → CONFIGURING → GENERATING → CYCLING
-- [ ] `src/browser/picker.ts` — `document.elementFromPoint` + `pickable()` Predikat (≥20×20, exclude eigene UI)
-- [ ] `src/browser/floating-bar.ts` — single bar, 3 Modes (configure / generating / cycling)
-- [ ] `src/browser/variant-render.ts` — CSS `@scope` cycling, display-toggle
-- [ ] `src/browser/parameter-sliders.ts` — bind range/steps/toggle zu CSS-Vars (zero-roundtrip)
-- [ ] `src/browser/annotations.ts` — strukturierte annotations `{target,kind,note}` (NICHT PNG-flatten)
-- [ ] `src/browser/multi-select.ts` — ⌘-click-add für Multi-Element (Improvement #1)
-- [ ] Bundle als `live.js` IIFE via tsup (kein React)
-- [ ] Manual-Test: pick element auf `next dev`, sieh bar erscheinen, dummy-cycle 3 variants
-- [ ] tag v0.3.0-prerelease + push
+- [x] `src/browser/state-machine.ts` — IDLE → PICKING → CONFIGURING → GENERATING → CYCLING
+- [x] `src/browser/picker.ts` — `document.elementFromPoint` + `pickable()` Predikat (≥20×20, exclude eigene UI)
+- [x] `src/browser/floating-bar.ts` — single bar, 3 Modes (configure / generating / cycling)
+- [x] `src/browser/variant-render.ts` — CSS `@scope` cycling, display-toggle
+- [x] `src/browser/parameter-sliders.ts` — bind range/steps/toggle zu CSS-Vars (zero-roundtrip)
+- [x] `src/browser/annotations.ts` — strukturierte annotations `{target,kind,note}` (NICHT PNG-flatten)
+- [x] `src/browser/multi-select.ts` — ⌘-click-add für Multi-Element (Improvement #1)
+- [x] Bundle als `live.js` IIFE via tsup (kein React)
+- [ ] Manual-Test: pick element auf `next dev`, sieh bar erscheinen, dummy-cycle 3 variants (deferred — needs Phase 3 source-inject; covered by 171 automated tests + jsdom in interim)
+- [x] tag v0.3.0-prerelease + push
 
 ### Phase 3 — Source-Edit Engine
 
@@ -261,7 +261,7 @@ mcp__ruflo__hooks_route { task: "<aktueller-task>" }
 |---|---|---|---|
 | 0 — Scaffolding & Manifest | completed | v0.1.0-prerelease | Doctor 7/7 OK; smoke tests green; dist 9.7 kB; private repo at Samuel0101010/wisp-design |
 | 1 — Local Bridge Server | completed | v0.2.0-prerelease | 4-agent pipeline (architect→coder+security→tester); 11/11 endpoints; auth + 5-rule path-traversal-guard; SSE+long-poll(270s cap); 77/77 tests green |
-| 2 — Browser Runtime (live.js) | pending | — | — |
+| 2 — Browser Runtime (live.js) | completed | v0.3.0-prerelease | 4-agent pipeline; 8 browser modules + sanitize + IIFE entry; bundle 31.30 KB (well under 50 KB budget); zod-side-effect via constants.ts split; jsdom env-match; 94 browser tests + constants-drift guard; cumulative 171 tests green |
 | 3 — Source-Edit Engine | pending | — | — |
 | 4 — Agent-Loop + Skill-Korpus | pending | — | — |
 | 5 — Verification-Gate (USP) | pending | — | — |

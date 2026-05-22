@@ -1,6 +1,6 @@
 {
   "name": "wisp-design",
-  "version": "0.2.0-prerelease",
+  "version": "0.3.0-prerelease",
   "description": "Live-Frontend-Design für Claude Code. Click element → 3 distincte Varianten in echtem HMR → CSS-Var-Slider → a11y-gated Accept → fs.writeFileSync. Verification-Gate vor jedem Accept.",
   "keywords": [
     "claude-code",
@@ -61,7 +61,9 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^20.14.0",
+    "jsdom": "^25.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
