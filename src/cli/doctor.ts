@@ -191,6 +191,29 @@ function checkSkillManifest(cwd: string): DoctorCheck {
   return ok("skills/wisp-design/SKILL.md");
 }
 
+// Phase 6 — `.wisp/policy.md` is the home of the in-session policy-proposal
+// flow (Improvement #5). WARN when missing — a fresh project has none yet,
+// but `init`/runtime proposal acceptance creates it. Not a FAIL because most
+// sessions never need a policy document.
+function checkPolicyDoc(cwd: string): DoctorCheck {
+  const path = resolve(cwd, ".wisp/policy.md");
+  if (!existsSync(path)) {
+    return warn(".wisp/policy.md", "not present — no project-wide design tendencies recorded yet");
+  }
+  return ok(".wisp/policy.md");
+}
+
+// Phase 6 — `.wisp/sessions/` is populated lazily on first `wisp-design live`
+// session. Missing is OK (no sessions run yet); present is OK (at least one
+// session logged). Reported either way for transparency, never FAIL.
+function checkSessionsDir(cwd: string): DoctorCheck {
+  const path = resolve(cwd, ".wisp/sessions");
+  if (!existsSync(path)) {
+    return ok(".wisp/sessions/", "not present (populated lazily on first session)");
+  }
+  return ok(".wisp/sessions/", "present");
+}
+
 function checkNodeVersion(): DoctorCheck {
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
   if (Number.isNaN(major) || major < 20) {
@@ -242,6 +265,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checkVerifyDep(opts.cwd, "axe-core", false),
     checkVerifyDep(opts.cwd, "playwright", true),
     checkVerifyDep(opts.cwd, "pixelmatch", true),
+    // Phase 6 session-replay + policy-proposal.
+    checkPolicyDoc(opts.cwd),
+    checkSessionsDir(opts.cwd),
   ];
   const hasFail = checks.some((c) => c.status === "fail");
   return { checks, exitCode: hasFail ? 1 : 0 };

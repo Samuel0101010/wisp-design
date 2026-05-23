@@ -195,6 +195,46 @@ __export(anti_slop_linter_exports, {
 });
 import { promises as fs } from "fs";
 import { extname } from "path";
+function aggregateRoundNumberWhitespace(content) {
+  let totalCount = 0;
+  let roundCount = 0;
+  let firstRoundOffset = -1;
+  let firstRoundLen = 0;
+  ANY_SPACING_DECL_RE.lastIndex = 0;
+  let m;
+  while ((m = ANY_SPACING_DECL_RE.exec(content)) !== null) {
+    totalCount += 1;
+    const value = m[2] ?? "";
+    if (ROUND_NUMBER_VALUES.has(value)) {
+      roundCount += 1;
+      if (firstRoundOffset === -1) {
+        firstRoundOffset = m.index;
+        firstRoundLen = m[0].length;
+      }
+    }
+  }
+  if (totalCount < ROUND_NUMBER_WHITESPACE_MIN_TOTAL) return [];
+  const ratio = roundCount / totalCount;
+  if (ratio <= ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD) return [];
+  const rule = RULES_BY_ID.get("round-number-whitespace");
+  if (rule === void 0) return [];
+  const location = {};
+  if (firstRoundOffset !== -1) {
+    const { line, column } = lineColAt(content, firstRoundOffset);
+    location.line = line;
+    location.column = column;
+    location.cssSnippet = snippet(content, firstRoundOffset, firstRoundLen);
+  }
+  return [
+    {
+      ruleId: rule.id,
+      severity: rule.severity,
+      message: `${rule.message} (${roundCount}/${totalCount} declarations on the 16/24/32/48px grid)`,
+      suggestedFix: rule.suggestedFix,
+      location
+    }
+  ];
+}
 function lineColAt(content, offset) {
   let line = 1;
   let column = 1;
@@ -245,6 +285,14 @@ async function runAntiSlop(css, ctx) {
   const violations = [];
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;
+    if (rule.aggregator !== void 0) {
+      const aggregated = rule.aggregator(css);
+      for (const v of aggregated) violations.push(v);
+      if (ctx?.budgetStartedAt !== void 0 && Date.now() - ctx.budgetStartedAt > ANTI_SLOP_LINTER_BUDGET_MS) {
+        break;
+      }
+      continue;
+    }
     const re = new RegExp(rule.pattern.source, rule.pattern.flags);
     let match;
     let matchCount = 0;
@@ -384,11 +432,15 @@ function formatWarnMessage(hits) {
   }
   return [head, ...lines].join("\n");
 }
-var RULES, RULES_BY_ID, FONT_WEIGHT_RE, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
+var ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, RULES, RULES_BY_ID, FONT_WEIGHT_RE, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
 var init_anti_slop_linter = __esm({
   "src/verify/anti-slop-linter.ts"() {
     "use strict";
     init_verify();
+    ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
+    ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
+    ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
+    ANY_SPACING_DECL_RE = /(padding|margin|gap)\s*:\s*(\d+)px(?![0-9])/g;
     RULES = [
       // ── Hard-bans ────────────────────────────────────────────────────────────
       {
@@ -471,10 +523,13 @@ var init_anti_slop_linter = __esm({
         id: "round-number-whitespace",
         severity: "warn",
         // padding/margin/gap exactly equal to the Tailwind defaults 16/24/32/48.
-        // We flag each occurrence; aggregator counts at file level.
+        // The `pattern` field stays exported for tests that introspect it; the
+        // RUNNER actually invokes `aggregator` below, which makes a single file-
+        // level decision based on the round/total ratio.
         pattern: /(padding|margin|gap)\s*:\s*(16|24|32|48)px(?![0-9])/g,
         message: "round-number whitespace (16/24/32/48px) \u2014 reads as Tailwind-default.",
-        suggestedFix: "Mix nearby steps (18/22/26/50) within a 4px grid to add considered rhythm."
+        suggestedFix: "Mix nearby steps (18/22/26/50) within a 4px grid to add considered rhythm.",
+        aggregator: aggregateRoundNumberWhitespace
       },
       {
         id: "default-tailwind-blue",

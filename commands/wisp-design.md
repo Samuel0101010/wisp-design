@@ -1,6 +1,6 @@
 ---
-description: Live-Frontend-Design Toolkit. Click element → 3 distincte Varianten in echtem HMR → a11y-gated Accept → fs.writeFileSync. Subcommands: live, init, audit, history, tokens, sync, skills, poll-once, post-event.
-argument-hint: "<subcommand> [args] — z.B. live | init | audit | history | tokens extract | sync --from <path> | skills index | skills search <q>"
+description: Live-Frontend-Design Toolkit. Click element → 3 distincte Varianten in echtem HMR → a11y-gated Accept → fs.writeFileSync. Subcommands: live, init, audit, history, morph, policy, tokens, sync, skills, poll-once, post-event.
+argument-hint: "<subcommand> [args] — z.B. live | init | audit | history | morph | policy | tokens extract | sync --from <path> | skills index | skills search <q>"
 allowed-tools: Read, Write, Edit, Bash(node *), Bash(npm *), Bash(npx *), Glob, Grep
 ---
 
@@ -20,7 +20,9 @@ Top-level dispatcher für den `wisp-design` Live-Loop. Routet anhand `$ARGUMENTS
 | `skills search <query> [--top-k K] [--namespace N]` | **4 ✓** | Query indexierten Korpus, returns topK `SkillsSearchResult[]` als JSON. |
 | `sync --from <vault-path> [--no-index]` | **4 ✓** | Copy vault MD-files in `skills/data/patterns/`, re-index. Explicit only — kein watcher. |
 | `audit [paths...] [--mode fast\|full\|strict] [--screenshot] [--format text\|json\|markdown] [--fail-on-warn]` | **5 ✓** | Verification-Gate auf geänderten Files (oder explizit übergebenen paths). `fast` = anti-slop only (Stop-hook subset, <100ms). `full` = alle 6 checks (anti-slop + a11y-axe + console-scan + tab-order + reduced-motion + multi-viewport mit `--screenshot`). `strict` = hard-block on hard-bans / AA-fails. Default mode `fast`, default Strenge **warn** (siehe `docs/verification-gate.md`). |
-| `history [--task <id>]` | 6 | Session-Viewer: rendert `.wisp/sessions/<id>.jsonl` als interaktive Tabelle |
+| `history [--task <id>] [--list] [--replay] [--format text\|json\|markdown]` | **6 ✓** | Session-Viewer: rendert `.wisp/sessions/<id>.jsonl` als Timeline (text default, JSON für tooling, Markdown für docs). Siehe `docs/session-replay.md`. |
+| `morph --variant-a <id> --variant-b <id> --t <0..1>` | **6 ✓** (internal) | Print interpolierte `@scope`-CSS für Morph-Slider (Improvement #3). Browser ruft dies pro Slider-Tick — pure stdout, kein State. |
+| `policy [--propose] [--apply <axis>=<value>]` | **6 ✓** | `--propose`: analysiert letzte N Accepts und schlägt Policy-Axis vor. `--apply density=generous`: schreibt in `.wisp/policy.md` (Improvement #5). |
 | `tokens extract` | 4 | Sample `getComputedStyle` über laufende App, cluster, schreibe `.wisp/design-tokens.json` |
 | `doctor [--fix]` | 0 ✓ | Verifiziert Manifest, Hooks, Build. Soll OK zurückgeben. |
 
@@ -61,6 +63,8 @@ liefert das CLI + den Skill; die Reasoning-Schleife ist deklarativ.
    - `sync` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" sync <args>`
    - `audit` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" audit <args>`
    - `history` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" history <args>`
+   - `morph` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" morph <args>` (internal — Browser-side morph-slider; nicht für End-User-Aufruf gedacht)
+   - `policy` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" policy <args>`
    - `tokens` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" tokens <args>`
    - `doctor` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" doctor <args>`
    - sonst → fehler + Hilfe.
@@ -71,6 +75,7 @@ liefert das CLI + den Skill; die Reasoning-Schleife ist deklarativ.
 
 - Phase 4 ✓: `poll-once`, `post-event`, `skills index`, `skills search`, `sync`. Siehe `docs/agent-loop.md` für die volle Architektur.
 - Phase 5 ✓: `audit` mit 3 modes (`fast`/`full`/`strict`). Siehe `docs/verification-gate.md` für mode-hierarchy, per-check budgets, override-flow.
+- Phase 6 ✓: `history`, `morph`, `policy`. Siehe `docs/session-replay.md` für JSONL-Format, Timeline-Reconstruction, Policy-Proposal-Flow; `docs/component-detection.md` für Component-Lib-Erkennung (Improvement #11). `morph` ist Browser-internal — Slider zwischen Variants A/B (Improvement #3).
 - `live` lädt das Browser-Runtime `live.js` per `<script src=…>`-Injection. Reversibel via `live --stop`.
 - Hot-Path Budget: variant-arrival p95 ≤ 3s. Verification-Gate (Phase 5) läuft parallel zu LLM-Generate, nicht sequenziell.
 - **Audit Modes & Strenge** (Lead-confirmed, research/synthesis.md Open Decision #7):

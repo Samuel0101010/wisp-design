@@ -41,7 +41,12 @@ function printHelp(): void {
       "  wisp-design sync --from <vault-path>      Sync vault pattern-docs into skills/. (Phase 4)",
       "  wisp-design audit [paths...] [--mode fast|full|strict] [--screenshot] [--format text|json|markdown] [--fail-on-warn]",
       "                                            Verification-Gate (anti-slop + a11y-axe + console + tab-order + reduced-motion [+ multi-viewport]). (Phase 5)",
-      "  wisp-design history [--task ID]           Replay a session log. (Phase 6, stub)",
+      "  wisp-design history [--task ID] [--list] [--replay] [--format text|json|markdown]",
+      "                                            Replay a session log. (Phase 6)",
+      "  wisp-design morph --variant-a ID --variant-b ID --t 0..1",
+      "                                            Print interpolated CSS for morph-mode slider. (Phase 6, internal)",
+      "  wisp-design policy [--propose] [--apply <axis>=<value>]",
+      "                                            Propose/apply policy axis to .wisp/policy.md. (Phase 6)",
       "  wisp-design tokens extract                Sample computed styles → design-tokens.json. (Phase 4, stub)",
       "  wisp-design verify-spec <spec>            Test a verify-spec against the workspace. (Phase 5, stub)",
       "  wisp-design hook <name>                   Internal hook entry (called by hooks/hooks.json)",
@@ -98,7 +103,6 @@ async function main(): Promise<number> {
 
   if (cmd === "live") return notImplemented("live", "1-4");
   if (cmd === "init") return notImplemented("init", "4");
-  if (cmd === "history") return notImplemented("history", "6");
   if (cmd === "tokens") return notImplemented("tokens", "4");
   if (cmd === "verify-spec") return notImplemented("verify-spec", "5");
 
@@ -125,10 +129,11 @@ async function main(): Promise<number> {
     fn: string,
     args: string[],
     phaseName: string,
+    phase: string = "4",
   ): Promise<number> => {
-    if (mod === null) return notImplemented(phaseName, "4");
+    if (mod === null) return notImplemented(phaseName, phase);
     const runner = mod[fn];
-    if (typeof runner !== "function") return notImplemented(phaseName, "4");
+    if (typeof runner !== "function") return notImplemented(phaseName, phase);
     return (runner as (a: string[]) => Promise<number>)(args);
   };
 
@@ -157,6 +162,21 @@ async function main(): Promise<number> {
     const runner = mod["runAudit"];
     if (typeof runner !== "function") return notImplemented("audit", "5");
     return (runner as (a: string[]) => Promise<number>)(rest);
+  }
+  // Phase 6 — session-replay, morph-mode, policy-proposal CLI primitives.
+  // Same lazy-load pattern as Phase 4/5. Contract surface lives in
+  // `src/contracts/session.ts` (`RunHistory`, `RunMorph`, `RunPolicy`).
+  if (cmd === "history") {
+    const mod = await lazyLoad("./agent/history.js");
+    return callRunner(mod, "runHistory", rest, "history", "6");
+  }
+  if (cmd === "morph") {
+    const mod = await lazyLoad("./agent/morph.js");
+    return callRunner(mod, "runMorph", rest, "morph", "6");
+  }
+  if (cmd === "policy") {
+    const mod = await lazyLoad("./agent/policy.js");
+    return callRunner(mod, "runPolicy", rest, "policy", "6");
   }
 
   process.stderr.write(`wisp-design: unknown command "${cmd}". Try --help.\n`);

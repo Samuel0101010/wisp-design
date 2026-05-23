@@ -172,6 +172,73 @@ interface CompiledRule {
   pattern: RegExp;
   message: string;
   suggestedFix: string;
+  // Optional file-level aggregator. When present, the runner uses this instead
+  // of `pattern.exec`-based occurrence scanning. Lets a rule decide based on
+  // distribution rather than per-occurrence — needed for soft suggestions that
+  // are too noisy when emitted per-hit (round-number-whitespace fires on every
+  // Tailwind-default spacing decl).
+  aggregator?: (content: string) => AntiSlopViolation[];
+}
+
+// ---------------------------------------------------------------------------
+// File-level aggregator for round-number-whitespace.
+//
+// Mechanism: count ALL `padding|margin|gap: <N>px` declarations and the subset
+// that use the "round" 16/24/32/48px values. Emit ONE violation per file only
+// when:
+//   - totalCount >= MIN_TOTAL (4)             — enough signal to call it a pattern
+//   - roundCount / totalCount > RATIO (0.7)   — dominant Tailwind-default rhythm
+//
+// Returns [] otherwise. This brings the soft-warn FPR down from ~45% (one hit
+// per round-spacing-decl) to ~0% on the test corpus where each fixture has
+// only one such decl (totalCount < 4).
+// ---------------------------------------------------------------------------
+
+const ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
+const ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
+const ROUND_NUMBER_VALUES: ReadonlySet<string> = new Set(["16", "24", "32", "48"]);
+const ANY_SPACING_DECL_RE = /(padding|margin|gap)\s*:\s*(\d+)px(?![0-9])/g;
+
+function aggregateRoundNumberWhitespace(content: string): AntiSlopViolation[] {
+  let totalCount = 0;
+  let roundCount = 0;
+  // Track FIRST round-number location to cite in the violation.
+  let firstRoundOffset = -1;
+  let firstRoundLen = 0;
+  ANY_SPACING_DECL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ANY_SPACING_DECL_RE.exec(content)) !== null) {
+    totalCount += 1;
+    const value = m[2] ?? "";
+    if (ROUND_NUMBER_VALUES.has(value)) {
+      roundCount += 1;
+      if (firstRoundOffset === -1) {
+        firstRoundOffset = m.index;
+        firstRoundLen = m[0].length;
+      }
+    }
+  }
+  if (totalCount < ROUND_NUMBER_WHITESPACE_MIN_TOTAL) return [];
+  const ratio = roundCount / totalCount;
+  if (ratio <= ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD) return [];
+  const rule = RULES_BY_ID.get("round-number-whitespace");
+  if (rule === undefined) return [];
+  const location: AntiSlopViolation["location"] = {};
+  if (firstRoundOffset !== -1) {
+    const { line, column } = lineColAt(content, firstRoundOffset);
+    location.line = line;
+    location.column = column;
+    location.cssSnippet = snippet(content, firstRoundOffset, firstRoundLen);
+  }
+  return [
+    {
+      ruleId: rule.id,
+      severity: rule.severity,
+      message: `${rule.message} (${roundCount}/${totalCount} declarations on the 16/24/32/48px grid)`,
+      suggestedFix: rule.suggestedFix,
+      location,
+    },
+  ];
 }
 
 const RULES: ReadonlyArray<CompiledRule> = [
@@ -270,12 +337,15 @@ const RULES: ReadonlyArray<CompiledRule> = [
     id: "round-number-whitespace",
     severity: "warn",
     // padding/margin/gap exactly equal to the Tailwind defaults 16/24/32/48.
-    // We flag each occurrence; aggregator counts at file level.
+    // The `pattern` field stays exported for tests that introspect it; the
+    // RUNNER actually invokes `aggregator` below, which makes a single file-
+    // level decision based on the round/total ratio.
     pattern: /(padding|margin|gap)\s*:\s*(16|24|32|48)px(?![0-9])/g,
     message:
       "round-number whitespace (16/24/32/48px) — reads as Tailwind-default.",
     suggestedFix:
       "Mix nearby steps (18/22/26/50) within a 4px grid to add considered rhythm.",
+    aggregator: aggregateRoundNumberWhitespace,
   },
   {
     id: "default-tailwind-blue",
@@ -398,6 +468,19 @@ export async function runAntiSlop(
   for (const rule of RULES) {
     // Skip the sentinel rule — handled below.
     if (rule.id === "single-weight-typography") continue;
+    // File-level aggregator (e.g. round-number-whitespace) decides on its own
+    // — runner does NOT fall through to per-occurrence regex scanning.
+    if (rule.aggregator !== undefined) {
+      const aggregated = rule.aggregator(css);
+      for (const v of aggregated) violations.push(v);
+      if (
+        ctx?.budgetStartedAt !== undefined &&
+        Date.now() - ctx.budgetStartedAt > ANTI_SLOP_LINTER_BUDGET_MS
+      ) {
+        break;
+      }
+      continue;
+    }
     // Re-create regex state because some rules use the `g` flag and would
     // otherwise carry `lastIndex` across calls.
     const re = new RegExp(rule.pattern.source, rule.pattern.flags);

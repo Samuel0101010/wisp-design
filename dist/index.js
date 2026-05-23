@@ -89,6 +89,46 @@ __export(anti_slop_linter_exports, {
 });
 import { promises as fs } from "fs";
 import { extname } from "path";
+function aggregateRoundNumberWhitespace(content) {
+  let totalCount = 0;
+  let roundCount = 0;
+  let firstRoundOffset = -1;
+  let firstRoundLen = 0;
+  ANY_SPACING_DECL_RE.lastIndex = 0;
+  let m;
+  while ((m = ANY_SPACING_DECL_RE.exec(content)) !== null) {
+    totalCount += 1;
+    const value = m[2] ?? "";
+    if (ROUND_NUMBER_VALUES.has(value)) {
+      roundCount += 1;
+      if (firstRoundOffset === -1) {
+        firstRoundOffset = m.index;
+        firstRoundLen = m[0].length;
+      }
+    }
+  }
+  if (totalCount < ROUND_NUMBER_WHITESPACE_MIN_TOTAL) return [];
+  const ratio = roundCount / totalCount;
+  if (ratio <= ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD) return [];
+  const rule = RULES_BY_ID.get("round-number-whitespace");
+  if (rule === void 0) return [];
+  const location = {};
+  if (firstRoundOffset !== -1) {
+    const { line, column } = lineColAt(content, firstRoundOffset);
+    location.line = line;
+    location.column = column;
+    location.cssSnippet = snippet(content, firstRoundOffset, firstRoundLen);
+  }
+  return [
+    {
+      ruleId: rule.id,
+      severity: rule.severity,
+      message: `${rule.message} (${roundCount}/${totalCount} declarations on the 16/24/32/48px grid)`,
+      suggestedFix: rule.suggestedFix,
+      location
+    }
+  ];
+}
 function lineColAt(content, offset) {
   let line = 1;
   let column = 1;
@@ -139,6 +179,14 @@ async function runAntiSlop(css, ctx) {
   const violations = [];
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;
+    if (rule.aggregator !== void 0) {
+      const aggregated = rule.aggregator(css);
+      for (const v of aggregated) violations.push(v);
+      if (ctx?.budgetStartedAt !== void 0 && Date.now() - ctx.budgetStartedAt > ANTI_SLOP_LINTER_BUDGET_MS) {
+        break;
+      }
+      continue;
+    }
     const re = new RegExp(rule.pattern.source, rule.pattern.flags);
     let match;
     let matchCount = 0;
@@ -278,11 +326,15 @@ function formatWarnMessage(hits) {
   }
   return [head, ...lines].join("\n");
 }
-var RULES, RULES_BY_ID, FONT_WEIGHT_RE, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
+var ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, RULES, RULES_BY_ID, FONT_WEIGHT_RE, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
 var init_anti_slop_linter = __esm({
   "src/verify/anti-slop-linter.ts"() {
     "use strict";
     init_verify();
+    ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
+    ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
+    ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
+    ANY_SPACING_DECL_RE = /(padding|margin|gap)\s*:\s*(\d+)px(?![0-9])/g;
     RULES = [
       // ── Hard-bans ────────────────────────────────────────────────────────────
       {
@@ -365,10 +417,13 @@ var init_anti_slop_linter = __esm({
         id: "round-number-whitespace",
         severity: "warn",
         // padding/margin/gap exactly equal to the Tailwind defaults 16/24/32/48.
-        // We flag each occurrence; aggregator counts at file level.
+        // The `pattern` field stays exported for tests that introspect it; the
+        // RUNNER actually invokes `aggregator` below, which makes a single file-
+        // level decision based on the round/total ratio.
         pattern: /(padding|margin|gap)\s*:\s*(16|24|32|48)px(?![0-9])/g,
         message: "round-number whitespace (16/24/32/48px) \u2014 reads as Tailwind-default.",
-        suggestedFix: "Mix nearby steps (18/22/26/50) within a 4px grid to add considered rhythm."
+        suggestedFix: "Mix nearby steps (18/22/26/50) within a 4px grid to add considered rhythm.",
+        aggregator: aggregateRoundNumberWhitespace
       },
       {
         id: "default-tailwind-blue",
@@ -578,6 +633,20 @@ function checkSkillManifest(cwd) {
   }
   return ok("skills/wisp-design/SKILL.md");
 }
+function checkPolicyDoc(cwd) {
+  const path = resolve(cwd, ".wisp/policy.md");
+  if (!existsSync(path)) {
+    return warn(".wisp/policy.md", "not present \u2014 no project-wide design tendencies recorded yet");
+  }
+  return ok(".wisp/policy.md");
+}
+function checkSessionsDir(cwd) {
+  const path = resolve(cwd, ".wisp/sessions");
+  if (!existsSync(path)) {
+    return ok(".wisp/sessions/", "not present (populated lazily on first session)");
+  }
+  return ok(".wisp/sessions/", "present");
+}
 function checkNodeVersion() {
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
   if (Number.isNaN(major) || major < 20) {
@@ -617,7 +686,10 @@ async function runDoctor(opts) {
     // Phase 5 verify-gate deps.
     checkVerifyDep(opts.cwd, "axe-core", false),
     checkVerifyDep(opts.cwd, "playwright", true),
-    checkVerifyDep(opts.cwd, "pixelmatch", true)
+    checkVerifyDep(opts.cwd, "pixelmatch", true),
+    // Phase 6 session-replay + policy-proposal.
+    checkPolicyDoc(opts.cwd),
+    checkSessionsDir(opts.cwd)
   ];
   const hasFail = checks.some((c) => c.status === "fail");
   return { checks, exitCode: hasFail ? 1 : 0 };
@@ -746,7 +818,12 @@ function printHelp() {
       "  wisp-design sync --from <vault-path>      Sync vault pattern-docs into skills/. (Phase 4)",
       "  wisp-design audit [paths...] [--mode fast|full|strict] [--screenshot] [--format text|json|markdown] [--fail-on-warn]",
       "                                            Verification-Gate (anti-slop + a11y-axe + console + tab-order + reduced-motion [+ multi-viewport]). (Phase 5)",
-      "  wisp-design history [--task ID]           Replay a session log. (Phase 6, stub)",
+      "  wisp-design history [--task ID] [--list] [--replay] [--format text|json|markdown]",
+      "                                            Replay a session log. (Phase 6)",
+      "  wisp-design morph --variant-a ID --variant-b ID --t 0..1",
+      "                                            Print interpolated CSS for morph-mode slider. (Phase 6, internal)",
+      "  wisp-design policy [--propose] [--apply <axis>=<value>]",
+      "                                            Propose/apply policy axis to .wisp/policy.md. (Phase 6)",
       "  wisp-design tokens extract                Sample computed styles \u2192 design-tokens.json. (Phase 4, stub)",
       "  wisp-design verify-spec <spec>            Test a verify-spec against the workspace. (Phase 5, stub)",
       "  wisp-design hook <name>                   Internal hook entry (called by hooks/hooks.json)",
@@ -801,7 +878,6 @@ ${out.exitCode === 0 ? "wisp-design doctor: OK" : "wisp-design doctor: FAIL"}
   }
   if (cmd === "live") return notImplemented("live", "1-4");
   if (cmd === "init") return notImplemented("init", "4");
-  if (cmd === "history") return notImplemented("history", "6");
   if (cmd === "tokens") return notImplemented("tokens", "4");
   if (cmd === "verify-spec") return notImplemented("verify-spec", "5");
   const lazyLoad = async (rel) => {
@@ -812,10 +888,10 @@ ${out.exitCode === 0 ? "wisp-design doctor: OK" : "wisp-design doctor: FAIL"}
       return null;
     }
   };
-  const callRunner = async (mod, fn, args, phaseName) => {
-    if (mod === null) return notImplemented(phaseName, "4");
+  const callRunner = async (mod, fn, args, phaseName, phase = "4") => {
+    if (mod === null) return notImplemented(phaseName, phase);
     const runner = mod[fn];
-    if (typeof runner !== "function") return notImplemented(phaseName, "4");
+    if (typeof runner !== "function") return notImplemented(phaseName, phase);
     return runner(args);
   };
   if (cmd === "poll-once") {
@@ -840,6 +916,18 @@ ${out.exitCode === 0 ? "wisp-design doctor: OK" : "wisp-design doctor: FAIL"}
     const runner = mod["runAudit"];
     if (typeof runner !== "function") return notImplemented("audit", "5");
     return runner(rest);
+  }
+  if (cmd === "history") {
+    const mod = await lazyLoad("./agent/history.js");
+    return callRunner(mod, "runHistory", rest, "history", "6");
+  }
+  if (cmd === "morph") {
+    const mod = await lazyLoad("./agent/morph.js");
+    return callRunner(mod, "runMorph", rest, "morph", "6");
+  }
+  if (cmd === "policy") {
+    const mod = await lazyLoad("./agent/policy.js");
+    return callRunner(mod, "runPolicy", rest, "policy", "6");
   }
   process.stderr.write(`wisp-design: unknown command "${cmd}". Try --help.
 `);

@@ -34,6 +34,20 @@ export default defineConfig([
       "verify/tab-order": "src/verify/tab-order.ts",
       "verify/reduced-motion": "src/verify/reduced-motion.ts",
       "verify/multi-viewport": "src/verify/multi-viewport.ts",
+      // Phase 6 — session-replay, history CLI, policy-proposal. Same
+      // lazy-load pattern as Phase 4/5: src/index.ts dynamic-imports each
+      // entry by its relative dist path.
+      "session/logger": "src/session/logger.ts",
+      "session/replay": "src/session/replay.ts",
+      "agent/history": "src/agent/history.ts",
+      "agent/policy": "src/agent/policy.ts",
+      // Phase 6 — Improvements #3, #6, #11. component-detect runs before each
+      // variant generation; structure-variant-mode generates JSX-subtree
+      // replacements under `--structural`; morph interpolates between two
+      // accepted variants for slider-driven blends.
+      "agent/component-detect": "src/agent/component-detect.ts",
+      "agent/morph": "src/agent/morph.ts",
+      "source/structure-variant-mode": "src/source/structure-variant-mode.ts",
     },
     format: ["esm"],
     target: "node20",

@@ -247,8 +247,19 @@ describe("soft: too-perfect-alignment", () => {
 // ---------------------------------------------------------------------------
 
 describe("soft: round-number-whitespace", () => {
-  it("flags padding: 16px (round-number Tailwind default)", async () => {
-    const v = await violationsOf(`.card { padding: 16px; }`);
+  // [AUDIT-RESOLVED] File-level aggregation landed in src/verify/anti-slop-linter.ts:
+  // the rule now requires ≥4 total `padding|margin|gap: <N>px` declarations AND
+  // a >0.7 ratio of those declarations sitting on 16/24/32/48 to fire ONE
+  // file-level violation. Per-occurrence emission is gone — that was the source
+  // of the soft-warn FPR breach.
+  it("flags a file dominated by round-number Tailwind defaults (≥4 decls, >0.7 ratio)", async () => {
+    const css = `
+      .a { padding: 16px; }
+      .b { margin: 24px; }
+      .c { gap: 32px; }
+      .d { padding: 48px; }
+    `;
+    const v = await violationsOf(css);
     expectRule(v, "round-number-whitespace");
     expect(v.find((x) => x.ruleId === "round-number-whitespace")?.severity).toBe("warn");
   });
@@ -257,12 +268,21 @@ describe("soft: round-number-whitespace", () => {
     expectNoRule(await violationsOf(`.card { padding: 18px; }`), "round-number-whitespace");
   });
 
-  // [AUDIT-RISK] Security flagged the rule for HIGH false-positive rate on
-  // typical Tailwind-heavy projects. This test pins the current sensitive
-  // behaviour: a single 16px hit fires. When file-level aggregation lands,
-  // a single-hit CSS will NOT fire and this test will need to flip.
-  it("[AUDIT-RISK] still fires on a single 16px occurrence (current sensitive behaviour)", async () => {
-    expectRule(await violationsOf(`.x { gap: 24px; }`), "round-number-whitespace");
+  // Post-aggregation: a single-decl file MUST NOT fire — that was the FPR
+  // breach root cause. The aggregator's MIN_TOTAL=4 guard enforces this.
+  it("does NOT fire on a single 24px gap (totalCount < 4 threshold)", async () => {
+    expectNoRule(await violationsOf(`.x { gap: 24px; }`), "round-number-whitespace");
+  });
+
+  // 4+ declarations but only 50% on the round grid → ratio 0.5 ≤ 0.7 threshold.
+  it("does NOT fire when round/total ratio ≤ 0.7", async () => {
+    const css = `
+      .a { padding: 16px; }
+      .b { margin: 24px; }
+      .c { gap: 18px; }
+      .d { padding: 22px; }
+    `;
+    expectNoRule(await violationsOf(css), "round-number-whitespace");
   });
 });
 
