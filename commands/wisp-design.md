@@ -19,7 +19,7 @@ Top-level dispatcher für den `wisp-design` Live-Loop. Routet anhand `$ARGUMENTS
 | `skills index [--namespace N]` | **4 ✓** | Re-index `skills/data/*` in AgentDB HNSW unter Namespace `wisp-design`. |
 | `skills search <query> [--top-k K] [--namespace N]` | **4 ✓** | Query indexierten Korpus, returns topK `SkillsSearchResult[]` als JSON. |
 | `sync --from <vault-path> [--no-index]` | **4 ✓** | Copy vault MD-files in `skills/data/patterns/`, re-index. Explicit only — kein watcher. |
-| `audit` | 5 | Pre-Commit-Gate: Anti-Slop-Linter + a11y-axe-delta auf geänderten Files |
+| `audit [paths...] [--mode fast\|full\|strict] [--screenshot] [--format text\|json\|markdown] [--fail-on-warn]` | **5 ✓** | Verification-Gate auf geänderten Files (oder explizit übergebenen paths). `fast` = anti-slop only (Stop-hook subset, <100ms). `full` = alle 6 checks (anti-slop + a11y-axe + console-scan + tab-order + reduced-motion + multi-viewport mit `--screenshot`). `strict` = hard-block on hard-bans / AA-fails. Default mode `fast`, default Strenge **warn** (siehe `docs/verification-gate.md`). |
 | `history [--task <id>]` | 6 | Session-Viewer: rendert `.wisp/sessions/<id>.jsonl` als interaktive Tabelle |
 | `tokens extract` | 4 | Sample `getComputedStyle` über laufende App, cluster, schreibe `.wisp/design-tokens.json` |
 | `doctor [--fix]` | 0 ✓ | Verifiziert Manifest, Hooks, Build. Soll OK zurückgeben. |
@@ -70,8 +70,14 @@ liefert das CLI + den Skill; die Reasoning-Schleife ist deklarativ.
 ## Notes
 
 - Phase 4 ✓: `poll-once`, `post-event`, `skills index`, `skills search`, `sync`. Siehe `docs/agent-loop.md` für die volle Architektur.
+- Phase 5 ✓: `audit` mit 3 modes (`fast`/`full`/`strict`). Siehe `docs/verification-gate.md` für mode-hierarchy, per-check budgets, override-flow.
 - `live` lädt das Browser-Runtime `live.js` per `<script src=…>`-Injection. Reversibel via `live --stop`.
-- Hot-Path Budget: variant-arrival p95 ≤ 3s. Verification-Gate (Phase 5) läuft parallel, nicht sequenziell.
-- Bei `--strict` blockt der Stop-Hook bei a11y-AA-Fail. Default ist `warn`.
+- Hot-Path Budget: variant-arrival p95 ≤ 3s. Verification-Gate (Phase 5) läuft parallel zu LLM-Generate, nicht sequenziell.
+- **Audit Modes & Strenge** (Lead-confirmed, research/synthesis.md Open Decision #7):
+  - `--mode fast` (default): anti-slop only, warn-default. Mirror von Stop-hook.
+  - `--mode full`: alle 6 checks, warn-default. `--screenshot` aktiviert multi-viewport (4 widths × 2 modes via Playwright optionalDep).
+  - `--mode strict`: alle 6 checks, **hard-block** on hard-bans und AA-fails. Exit-Code 1 bei block.
+  - `--fail-on-warn`: CI-knob — promoteet warn zu exit-1 in jedem mode.
+- **Stop-hook**: läuft anti-slop on git diff bei jedem Claude turn, p99 < 100ms. Hard-ban hits zu stderr (warn). `WISP_DESIGN_STRICT=1` promoteet zu `permissionDecision: "block"`.
 - `poll-once` ist eine **one-shot** Primitive — die while-Schleife lebt im Skill (`skills/wisp-design/SKILL.md`), NICHT in der CLI.
 - `sync` ist explicit-only. Kein File-Watcher, kein Push-Script (Open Decision #6 in `research/synthesis.md`).

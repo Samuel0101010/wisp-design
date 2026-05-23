@@ -1,6 +1,6 @@
 {
   "name": "wisp-design",
-  "version": "0.5.0-prerelease",
+  "version": "0.6.0-prerelease",
   "description": "Live-Frontend-Design für Claude Code. Click element → 3 distincte Varianten in echtem HMR → CSS-Var-Slider → a11y-gated Accept → fs.writeFileSync. Verification-Gate vor jedem Accept.",
   "keywords": [
     "claude-code",
@@ -58,11 +58,17 @@
     "doctor": "node dist/index.js doctor"
   },
   "dependencies": {
+    "axe-core": "^4.10.0",
     "zod": "^3.23.8"
+  },
+  "optionalDependencies": {
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.49.0"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",
     "@types/node": "^20.14.0",
+    "@types/pixelmatch": "^5.2.6",
     "jsdom": "^25.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",

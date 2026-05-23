@@ -39,7 +39,8 @@ function printHelp(): void {
       "  wisp-design post-event --kind K --payload <json>  Push event to bridge. (Phase 4)",
       "  wisp-design skills <index|search> [args]  Index/query skills corpus. (Phase 4)",
       "  wisp-design sync --from <vault-path>      Sync vault pattern-docs into skills/. (Phase 4)",
-      "  wisp-design audit [--strict]              Pre-commit a11y + anti-slop linter. (Phase 5, stub)",
+      "  wisp-design audit [paths...] [--mode fast|full|strict] [--screenshot] [--format text|json|markdown] [--fail-on-warn]",
+      "                                            Verification-Gate (anti-slop + a11y-axe + console + tab-order + reduced-motion [+ multi-viewport]). (Phase 5)",
       "  wisp-design history [--task ID]           Replay a session log. (Phase 6, stub)",
       "  wisp-design tokens extract                Sample computed styles → design-tokens.json. (Phase 4, stub)",
       "  wisp-design verify-spec <spec>            Test a verify-spec against the workspace. (Phase 5, stub)",
@@ -97,7 +98,6 @@ async function main(): Promise<number> {
 
   if (cmd === "live") return notImplemented("live", "1-4");
   if (cmd === "init") return notImplemented("init", "4");
-  if (cmd === "audit") return notImplemented("audit", "5");
   if (cmd === "history") return notImplemented("history", "6");
   if (cmd === "tokens") return notImplemented("tokens", "4");
   if (cmd === "verify-spec") return notImplemented("verify-spec", "5");
@@ -147,6 +147,16 @@ async function main(): Promise<number> {
   if (cmd === "sync") {
     const mod = await lazyLoad("./agent/sync.js");
     return callRunner(mod, "runSync", rest, "sync");
+  }
+  // Phase 5 — verification-gate CLI primitive. Same lazy-load pattern as
+  // Phase 4 to keep tsc happy while coder's `src/agent/audit.ts` lands in
+  // parallel. Contract surface lives in `src/contracts/verify.ts` (`RunAudit`).
+  if (cmd === "audit") {
+    const mod = await lazyLoad("./agent/audit.js");
+    if (mod === null) return notImplemented("audit", "5");
+    const runner = mod["runAudit"];
+    if (typeof runner !== "function") return notImplemented("audit", "5");
+    return (runner as (a: string[]) => Promise<number>)(rest);
   }
 
   process.stderr.write(`wisp-design: unknown command "${cmd}". Try --help.\n`);

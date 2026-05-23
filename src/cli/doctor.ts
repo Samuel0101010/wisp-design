@@ -199,6 +199,31 @@ function checkNodeVersion(): DoctorCheck {
   return ok("node version", `v${process.versions.node}`);
 }
 
+// Phase 5 verify-gate deps. axe-core is a regular dependency (a11y check is
+// always available); playwright + pixelmatch are optionalDependencies and
+// degrade gracefully when missing — we WARN rather than FAIL.
+function checkVerifyDep(
+  cwd: string,
+  pkg: string,
+  optional: boolean,
+): DoctorCheck {
+  const path = resolve(cwd, "node_modules", pkg, "package.json");
+  if (existsSync(path)) {
+    try {
+      const meta = readJson(path);
+      const v = isPlainObject(meta) && typeof meta.version === "string" ? meta.version : "?";
+      return ok(`node_modules/${pkg}`, `v${v}`);
+    } catch {
+      return ok(`node_modules/${pkg}`, "installed");
+    }
+  }
+  if (optional) {
+    const label = pkg === "playwright" ? "multi-viewport screenshots disabled" : "reduced-motion pixel-diff disabled";
+    return warn(`node_modules/${pkg}`, `optional dep missing — ${label}`);
+  }
+  return fail(`node_modules/${pkg}`, "missing (required for Phase 5 a11y-axe check)");
+}
+
 export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
   // `fix` is reserved for future autocorrect actions (e.g. rebuild dist, regenerate manifest);
   // Phase 0 ships read-only checks. Reference it so the param doesn't trip noUnusedParameters.
@@ -213,6 +238,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checkDist(opts.cwd),
     checkSkillsLayout(opts.cwd),
     checkSkillManifest(opts.cwd),
+    // Phase 5 verify-gate deps.
+    checkVerifyDep(opts.cwd, "axe-core", false),
+    checkVerifyDep(opts.cwd, "playwright", true),
+    checkVerifyDep(opts.cwd, "pixelmatch", true),
   ];
   const hasFail = checks.some((c) => c.status === "fail");
   return { checks, exitCode: hasFail ? 1 : 0 };
