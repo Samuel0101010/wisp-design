@@ -93,15 +93,18 @@ export function renderVariants(
     throw new Error("renderVariants requires at least one variant");
   }
 
-  // Resolve the target via its selector. We accept the selector by
-  // construction (we built it in picker.ts) but still gate through the
-  // SanitizeModule for defence-in-depth.
-  const selCheck = opts.sanitize.trustedSelector(target.selector);
-  if (!selCheck.ok) {
-    throw new Error(`renderVariants: rejected selector — ${selCheck.reason.message}`);
+  // Resolve the target via its selector. The selector was built by
+  // picker.buildSelector() (our own code, not user-controlled) so we look
+  // it up directly. We wrap in try/catch because an invalid selector string
+  // would otherwise throw a SyntaxError from querySelector.
+  let originalNode: Element | null;
+  try {
+    originalNode = document.querySelector(target.selector);
+  } catch (err) {
+    throw new Error(
+      `renderVariants: querySelector threw for selector ${JSON.stringify(target.selector)} — ${String(err)}`,
+    );
   }
-
-  const originalNode = document.querySelector(selCheck.selector);
   if (originalNode === null) {
     throw new Error(`renderVariants: target not found — ${target.selector}`);
   }

@@ -41,6 +41,20 @@ Each direction in the table is one-liner. Full content lives in dedicated direct
 | `cinematic-spatial`    | Full-viewport sections, parallax, photography-first                     | Hardware, luxury brands                           |
 | `eastern-philosophy`   | Ma (negative space), asymmetric balance, considered restraint           | Premium brands, Asian-market products             |
 | `experimental-avant-garde` | Rule-breaking layouts, unconventional navigation, art-piece feel | Studios, art platforms, design portfolios         |
+| `monochrome-minimal`   | Pure greyscale, all hierarchy via weight + size, no chroma              | Photography, studios, content-first products      |
+| `dark-mode-noir`       | True-black ground, single restrained accent, thin type                  | Developer tools, music apps, premium evening apps |
+| `paper-tactile`        | Textured cream ground, real serif body, ink-saturated colour            | Reading apps, journals, publishing, hospitality   |
+| `terminal-monospace`   | Monospace everywhere, scanline aesthetic, amber/green on near-black     | Dev tools, observability, security products       |
+| `bauhaus-geometric`    | Primary triad + black/white, strict grid, geometric sans                | Studios, design schools, manufacturing brands     |
+| `scandi-warm-minimal`  | Sand/cream/charcoal, humanist sans, generous whitespace                 | Hospitality, wellness, lifestyle products         |
+| `museum-archive`       | Cream ivory, dense small-cap labels, hairline rules                     | Archives, galleries, cultural institutions        |
+| `industrial-utilitarian` | Concrete grey, oversized type, hard right-angles, no decoration       | Manufacturing, logistics, B2B operations          |
+| `editorial-fashion`    | Extreme display serif, pure-white ground, generous tracking             | Fashion, beauty, jewelry, luxury hospitality      |
+| `1990s-print`          | Risograph-inspired off-register, limited 3-color palette                | Zines, music labels, indie publishing, festivals  |
+| `playful-rounded`      | Heavy rounded corners, humanist sans, soft pastel accents               | Children's apps, consumer fintech, wellness       |
+| `data-density-bloomberg` | Dense info, monospace columns, no decoration, function-first          | Trading platforms, analytics, observability       |
+| `archival-typewriter`  | Courier type, faded ink colors, paper tone, manuscript layout           | Writing tools, screenwriting, archives            |
+| `glass-architectural`  | Restrained glass on layer-2+ surfaces only (modals, palettes)           | Modal overlays, command palettes, Apple-platform  |
 
 ## How to use
 

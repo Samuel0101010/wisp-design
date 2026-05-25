@@ -99,21 +99,71 @@ describe("buildSelector", () => {
     expect(buildSelector(d)).toBe("#foo");
   });
 
-  it("builds a tag:nth-of-type chain when no id is present", () => {
+  it("builds a tag chain (no nth-of-type when single sibling) when no id or classes", () => {
     document.body.innerHTML = "<div><span></span></div>";
     const span = document.body.querySelector("span") as HTMLElement;
     const sel = buildSelector(span);
-    // either `div:nth-of-type(1) > span:nth-of-type(1)` shape
-    expect(sel).toMatch(/div:nth-of-type\(\d+\) > span:nth-of-type\(\d+\)/);
+    // The span is unique in the document, so the shortest unique suffix is returned.
+    // It must contain 'span' and be a valid CSS selector.
+    expect(sel).toContain("span");
+    expect(() => document.querySelectorAll(sel)).not.toThrow();
+    expect(document.querySelectorAll(sel).length).toBe(1);
   });
 
-  it("builds a deep chain for nested elements", () => {
+  it("builds a tag:nth-of-type chain when multiple same-tag siblings exist", () => {
+    document.body.innerHTML = "<div><span></span><span></span></div>";
+    const spans = document.body.querySelectorAll("span");
+    const first = spans[0] as HTMLElement;
+    const second = spans[1] as HTMLElement;
+    const sel1 = buildSelector(first);
+    const sel2 = buildSelector(second);
+    // When siblings share same tag and have no classes, nth-of-type is used.
+    expect(sel1).toMatch(/span:nth-of-type\(1\)/);
+    expect(sel2).toMatch(/span:nth-of-type\(2\)/);
+  });
+
+  it("builds a selector for deeply nested elements (no classes)", () => {
     document.body.innerHTML =
       "<section><article><p><em></em></p></article></section>";
     const em = document.body.querySelector("em") as HTMLElement;
     const sel = buildSelector(em);
-    expect(sel.split(" > ").length).toBeGreaterThanOrEqual(3);
-    expect(sel).toContain("em:nth-of-type(1)");
+    // em is unique in the page — the uniqueness check may return just "em".
+    // Regardless, the result must be valid and unique.
+    expect(sel).toContain("em");
+    expect(document.querySelectorAll(sel).length).toBe(1);
+  });
+
+  it("emits class-aware segments when classes are present", () => {
+    document.body.innerHTML =
+      '<section class="space-y-4"><div class="relative"><h3 class="mt-2 text-6xl font-black">Heading</h3></div></section>';
+    const h3 = document.body.querySelector("h3") as HTMLElement;
+    const sel = buildSelector(h3);
+    // Must include tag and sorted classes from h3.
+    expect(sel).toContain("h3");
+    expect(sel).toContain("font-black");
+    expect(sel).toContain("mt-2");
+    expect(sel).toContain("text-6xl");
+  });
+
+  it("skips Tailwind state-prefixed classes (hover:, sm:, dark:)", () => {
+    document.body.innerHTML =
+      '<button class="mt-6 hover:bg-blue-700 sm:w-auto dark:text-white w-full">Click</button>';
+    const btn = document.body.querySelector("button") as HTMLElement;
+    const sel = buildSelector(btn);
+    expect(sel).not.toContain("hover:");
+    expect(sel).not.toContain("sm:");
+    expect(sel).not.toContain("dark:");
+    // Non-prefixed classes should appear.
+    expect(sel).toContain("mt-6");
+    expect(sel).toContain("w-full");
+  });
+
+  it("result resolves uniquely via querySelectorAll when element is unique", () => {
+    document.body.innerHTML =
+      '<section class="hero"><h3 class="font-bold text-4xl">Title</h3></section>';
+    const h3 = document.body.querySelector("h3") as HTMLElement;
+    const sel = buildSelector(h3);
+    expect(document.querySelectorAll(sel).length).toBe(1);
   });
 
   it("anchors on an ancestor's id when one is found", () => {

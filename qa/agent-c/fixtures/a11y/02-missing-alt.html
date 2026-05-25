@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Missing Alt</title>
+</head>
+<body>
+  <main>
+    <h1>Product Features</h1>
+    <img src="x.jpg">
+    <img src="y.png">
+    <p>Images above missing alt attribute (axe: image-alt, critical, wcag2a).</p>
+    <p>Note: image-alt is WCAG Level A, so severityFor("A", "critical") = "warn"
+       per a11y-axe.ts policy. This is a design decision: only AA violations hard-block.</p>
+  </main>
+</body>
+</html>

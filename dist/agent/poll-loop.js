@@ -217,7 +217,13 @@ var AcceptEventSchema = z2.object({
   kind: z2.literal("accept"),
   target: ElementTargetSchema,
   variantId: z2.string().min(1),
-  sessionId
+  sessionId,
+  // Phase 7.8 — Browser includes the accepted variant's CSS so the in-process
+  // accept handler can splice it into source without regenerating from a stub.
+  // Optional for back-compat: older browsers / tests omit this and the handler
+  // falls back to stub regeneration.
+  variantCss: z2.string().optional(),
+  rationale: z2.string().optional()
 });
 var DiscardEventSchema = z2.object({
   kind: z2.literal("discard"),

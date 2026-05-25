@@ -21,8 +21,13 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+function sha256(s: string): string {
+  return createHash("sha256").update(s, "utf8").digest("hex");
+}
 
 import {
   discardVariantBlock,
@@ -197,7 +202,12 @@ describe("wrapVariantBlock — selector resolution", () => {
     expect(r.reason).toBe("target_not_found");
   });
 
-  it("[FINDING] `.btn` with multi-class `className='btn primary'` does NOT match (anchor is literal `\"btn\"` with closing quote)", async () => {
+  it("`.btn` with multi-class `className='btn primary'` DOES match (Phase 7.0 class-set verification)", async () => {
+    // Phase 7.0 fix: locateTargetSpan now parses each candidate element's
+    // class attribute into a Set and verifies the selector's classes are a
+    // SUBSET. Multi-class declarations are first-class, finally. The old
+    // [FINDING] note (anchor was literal `"btn"` with closing quote) is
+    // resolved by the new class-set matching path.
     const file = join(root, "multi.tsx");
     writeFileSync(file, MULTI_CLASS, "utf8");
     const r = await wrapVariantBlock(
@@ -207,11 +217,7 @@ describe("wrapVariantBlock — selector resolution", () => {
       3,
       { projectRoot: root },
     );
-    // selectorToAnchor returns `"btn"` — present only in single-class
-    // declarations. Multi-class attribute → target_not_found.
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.reason).toBe("target_not_found");
+    expect(r.ok).toBe(true);
   });
 
   it("attribute selector `[data-wisp-target='x']` resolves to inner anchor", async () => {
@@ -309,10 +315,16 @@ describe("wrap → discard roundtrip", () => {
   });
   afterEach(() => cleanup(root));
 
-  it("[QUIRK] JSX wrap+discard: restoredByteEquivalent=true returned, but the wrap-span includes a trailing newline that is dropped on discard", async () => {
+  it("JSX wrap → discard restores the file byte-for-byte (Phase 7.13)", async () => {
+    // Phase-7.13 byte-equivalence lock. The wrap appends a single `\n` to
+    // the marker block, and `findMarkerBlock`'s endOffset accounts for it,
+    // so splicing back `originalSnippet` reproduces pre-wrap content
+    // exactly. The previous `[QUIRK]` assertion documented a non-existent
+    // drift — that conditional is replaced with a strict equality lock.
     const file = join(root, "page.tsx");
     writeFileSync(file, PAGE_TSX, "utf8");
     const original = readFileSync(file, "utf8");
+    const originalHash = sha256(original);
 
     const r = await wrapVariantBlock(
       file,
@@ -327,23 +339,40 @@ describe("wrap → discard roundtrip", () => {
       projectRoot: root,
     });
     expect(d.discarded).toBe(true);
-    // Engine claims byte-equivalent because it has a non-empty originalLines
-    // payload to splice back. Whether the bytes truly match is fixture-shape
-    // dependent — pin actual behavior here:
     expect(d.restoredByteEquivalent).toBe(true);
+
     const restored = readFileSync(file, "utf8");
-    // FINDING: full file is NOT necessarily byte-equivalent because the
-    // wrap-span includes one trailing newline that the discard splice
-    // collapses with neighbouring content. Document by checking which
-    // structural elements survive, not exact bytes.
-    expect(restored).toContain("<div id=\"hero\">");
-    expect(restored).toContain("<h1>Title</h1>");
-    expect(restored).not.toContain("wisp-variants-start");
-    // Documenting the byte-equivalence drift (NOT asserting equality):
-    if (restored !== original) {
-      // intentionally non-fatal — log via expect on a known mismatch.
-      expect(restored.length).not.toBe(original.length);
-    }
+    expect(restored).toBe(original);
+    expect(sha256(restored)).toBe(originalHash);
+  });
+
+  it("HTML wrap → discard restores the file byte-for-byte (sha256 lock)", async () => {
+    // Same byte-equivalence guarantee but on HTML (different marker syntax
+    // — `<!-- … -->` instead of `{/* … */}`). Pins that the marker-finder
+    // returns the same boundary semantics for HTML as for JSX.
+    const file = join(root, "page.html");
+    writeFileSync(file, HTML_PAGE, "utf8");
+    const original = readFileSync(file, "utf8");
+    const originalHash = sha256(original);
+
+    const w = await wrapVariantBlock(
+      file,
+      { id: "cta", selector: "#cta" },
+      SESSION,
+      3,
+      { projectRoot: root },
+    );
+    expect(w.ok).toBe(true);
+
+    const d = await discardVariantBlock(file, SESSION, "cta", {
+      projectRoot: root,
+    });
+    expect(d.discarded).toBe(true);
+    expect(d.restoredByteEquivalent).toBe(true);
+
+    const restored = readFileSync(file, "utf8");
+    expect(sha256(restored)).toBe(originalHash);
+    expect(restored).toBe(original);
   });
 
   it("discard with no prior wrap → throws", async () => {
@@ -388,6 +417,77 @@ describe("wrapVariantBlock — already wrapped behavior", () => {
     const out = readFileSync(file, "utf8");
     const starts = out.match(/wisp-variants-start/g) ?? [];
     expect(starts.length).toBe(2);
+  });
+});
+
+describe("wrapVariantBlock — dynamic className JSX-expression fallback", () => {
+  let root: string;
+  beforeEach(() => {
+    root = makeRoot();
+  });
+  afterEach(() => cleanup(root));
+
+  it("`className={cn(...)}` → DYNAMIC_CLASSNAME error with agent-driven fallback", async () => {
+    const file = join(root, "dyn.tsx");
+    writeFileSync(
+      file,
+      `export default function P({ primary }: { primary: boolean }) {
+  return (
+    <button className={cn("btn", primary && "primary")}>Click</button>
+  );
+}
+`,
+      "utf8",
+    );
+    const r = await wrapVariantBlock(
+      file,
+      { id: "btn", selector: ".btn" },
+      SESSION,
+      3,
+      { projectRoot: root },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("dynamic_classname");
+    expect(r.code).toBe("DYNAMIC_CLASSNAME");
+    expect(r.suggestedFallback).toBe("agent-driven");
+    expect(r.message).toMatch(/className=\{\.\.\.\} JSX expression at line \d+/);
+    expect(r.message).toMatch(/agent-driven mode/);
+  });
+
+  it("static `class='btn primary'` still matches (control: non-JSX double-quoted)", async () => {
+    const file = join(root, "static-html-style.tsx");
+    writeFileSync(
+      file,
+      `export default function P() {
+  return (
+    <button class="btn primary">Click</button>
+  );
+}
+`,
+      "utf8",
+    );
+    const r = await wrapVariantBlock(
+      file,
+      { id: "btn", selector: ".btn" },
+      SESSION,
+      3,
+      { projectRoot: root },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("static `className='btn primary'` still matches (control: JSX double-quoted)", async () => {
+    const file = join(root, "static-jsx.tsx");
+    writeFileSync(file, MULTI_CLASS, "utf8");
+    const r = await wrapVariantBlock(
+      file,
+      { id: "btn", selector: ".btn" },
+      SESSION,
+      3,
+      { projectRoot: root },
+    );
+    expect(r.ok).toBe(true);
   });
 });
 

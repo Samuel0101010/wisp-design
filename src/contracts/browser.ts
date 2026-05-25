@@ -220,6 +220,8 @@ export const STATE_TRANSITIONS: readonly StateTransition[] = [
   { from: "generating", to: "cycling", event: "generate-variants-arrived" },
   { from: "generating", to: "configuring", event: "generate-error" },
   { from: "generating", to: "configuring", event: "generate-cancel" },
+  // Phase 7.8 — late-arriving real-agent variants replace the placeholder.
+  { from: "cycling", to: "cycling", event: "generate-variants-arrived" },
   { from: "cycling", to: "cycling", event: "cycle-next" },
   { from: "cycling", to: "cycling", event: "cycle-prev" },
   { from: "cycling", to: "cycling", event: "cycle-set-active" },

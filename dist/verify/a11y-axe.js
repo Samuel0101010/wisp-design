@@ -289,12 +289,16 @@ var AuditOptionsSchema = z.object({
   // Force multi-viewport screenshot (requires playwright optionalDep).
   screenshotEnabled: z.boolean().default(false)
 });
-var A11Y_AXE_BUDGET_MS = 800;
+var A11Y_AXE_BUDGET_MS = 1500;
 
 // src/verify/a11y-axe.ts
 async function loadAxe() {
   try {
-    return await import("axe-core");
+    const mod = await import("axe-core");
+    if (mod.default !== void 0 && typeof mod.default.run === "function") {
+      return mod.default;
+    }
+    return mod;
   } catch {
     return null;
   }
@@ -336,17 +340,22 @@ function mapAxeViolation(v) {
     const selector = n.target.length === 0 ? "" : Array.isArray(n.target[0]) ? n.target[0].join(" >>> ") : n.target[0];
     return n.html !== void 0 ? { selector, html: n.html } : { selector };
   });
+  const vUnknown = v;
+  const baseHelp = typeof vUnknown.help === "string" ? vUnknown.help : v.id;
+  const firstSelector = nodes.length > 0 ? nodes[0]?.selector ?? "" : "";
+  const message = firstSelector !== "" ? `${baseHelp} (${firstSelector}${nodes.length > 1 ? ` +${nodes.length - 1} more` : ""})` : baseHelp;
   const out = {
     ruleId: v.id,
     impact,
     level,
     severity,
-    nodes
+    nodes,
+    message
   };
   if (v.helpUrl !== void 0) out.helpUrl = v.helpUrl;
   return out;
 }
-async function tryLoadSandbox() {
+async function loadSandbox() {
   try {
     return await Promise.resolve().then(() => (init_sandbox(), sandbox_exports));
   } catch {
@@ -354,21 +363,25 @@ async function tryLoadSandbox() {
   }
 }
 async function runViaPlaywright(livePreviewUrl, axe) {
-  const pw = await loadPlaywright();
-  if (pw === null) {
-    throw new Error("playwright not available");
+  const sandbox = await loadSandbox();
+  if (sandbox === null) {
+    throw new Error("sandbox not available");
   }
-  const u = new URL(livePreviewUrl);
-  if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
-    throw new Error(`a11y-axe refuses non-localhost URL: ${livePreviewUrl}`);
-  }
-  const sandbox = await tryLoadSandbox();
-  if (sandbox !== null) {
-    const { browser: browser2, page } = await sandbox.safeBrowserLaunch(livePreviewUrl);
+  const handle = await sandbox.safeBrowserLaunch({
+    livePreviewUrl,
+    budgetMs: A11Y_AXE_BUDGET_MS
+  });
+  try {
+    const page = await handle.newPage();
     try {
-      const p = page;
-      await p.addScriptTag({ content: axe.source });
-      const results = await p.evaluate(async () => {
+      await page.goto(livePreviewUrl, {
+        timeout: A11Y_AXE_BUDGET_MS,
+        waitUntil: "domcontentloaded"
+      });
+      await page.addScriptTag({
+        content: axe.source
+      });
+      const results = await page.evaluate(async () => {
         const a = globalThis.axe;
         return a.run(document, {
           runOnly: {
@@ -383,35 +396,13 @@ async function runViaPlaywright(livePreviewUrl, axe) {
       return results.violations.map(mapAxeViolation);
     } finally {
       try {
-        await browser2.close();
+        await page.close();
       } catch {
       }
     }
-  }
-  const browser = await pw.chromium.launch({
-    headless: true,
-    args: ["--disable-extensions", "--no-default-browser-check", "--no-first-run"]
-  });
-  try {
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    await page.goto(livePreviewUrl, { timeout: 5e3, waitUntil: "networkidle" });
-    await page.addScriptTag({
-      content: axe.source
-    });
-    const results = await page.evaluate(async () => {
-      const a = globalThis.axe;
-      return a.run(document, {
-        runOnly: {
-          type: "tag",
-          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]
-        }
-      });
-    });
-    return results.violations.map(mapAxeViolation);
   } finally {
     try {
-      await browser.close();
+      await handle.close();
     } catch {
     }
   }
@@ -425,17 +416,39 @@ async function runViaJsdom(html, axe) {
     // Don't run scripts — axe is injected manually and we don't want
     // arbitrary author JS to execute.
     runScripts: "outside-only",
-    pretendToBeVisual: true
+    pretendToBeVisual: true,
+    // Suppress jsdom console noise (resource-load warnings etc.) so they
+    // don't leak into the wisp-design audit output.
+    virtualConsole: new jsdomMod.VirtualConsole()
+    // Default `resources` (undefined) means jsdom does NOT fetch external
+    // resources — <link href="cdn.tailwind..."> is silently ignored. This is
+    // what we want: no network I/O, no timeout hanging on CDN fetches.
   });
   const win = dom.window;
-  const savedWindow = globalThis.window;
-  const savedDocument = globalThis.document;
-  const savedNavigator = globalThis.navigator;
-  globalThis.window = win;
-  globalThis.document = win.document;
-  globalThis.navigator = win.navigator;
+  const spliceGlobal = (key, value) => {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, key);
+    const prev = desc !== void 0 && "value" in desc ? desc.value : globalThis[key];
+    Object.defineProperty(globalThis, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: true
+    });
+    return prev;
+  };
+  const restoreGlobal = (key, value) => {
+    Object.defineProperty(globalThis, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: true
+    });
+  };
+  const savedWindow = spliceGlobal("window", win);
+  const savedDocument = spliceGlobal("document", win.document);
+  const savedNavigator = spliceGlobal("navigator", win.navigator);
   try {
-    const results = await axe.run(win.document, {
+    const results = await axe.run(win.document.documentElement, {
       runOnly: {
         type: "tag",
         values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]
@@ -443,9 +456,9 @@ async function runViaJsdom(html, axe) {
     });
     return results.violations.map(mapAxeViolation);
   } finally {
-    globalThis.window = savedWindow;
-    globalThis.document = savedDocument;
-    globalThis.navigator = savedNavigator;
+    restoreGlobal("window", savedWindow);
+    restoreGlobal("document", savedDocument);
+    restoreGlobal("navigator", savedNavigator);
     try {
       dom.window.close();
     } catch {
@@ -458,7 +471,7 @@ async function runA11yAxe(opts) {
   if (axe === null) {
     return {
       name: "a11y-axe",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: { reason: "error", detail: "axe-core import failed" }
     };
@@ -487,14 +500,12 @@ async function runA11yAxe(opts) {
     } else {
       return {
         name: "a11y-axe",
-        severity: "pass",
+        severity: "warn",
         durationMs: Date.now() - startedAt,
         skipped: { reason: "error", detail: "neither html nor livePreviewUrl supplied" }
       };
     }
     const durationMs = Date.now() - startedAt;
-    if (durationMs > A11Y_AXE_BUDGET_MS) {
-    }
     const severity = violations.some((v) => v.severity === "fail") ? "fail" : violations.some((v) => v.severity === "warn") ? "warn" : "pass";
     return {
       name: "a11y-axe",
@@ -505,7 +516,7 @@ async function runA11yAxe(opts) {
   } catch (err) {
     return {
       name: "a11y-axe",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",

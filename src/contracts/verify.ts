@@ -234,6 +234,10 @@ export interface A11yViolation {
   severity: "fail" | "warn";
   nodes: Array<{ selector: string; html?: string }>;
   helpUrl?: string;
+  // Human-readable summary — pulled from axe's `help` field at map time so
+  // the audit text/markdown formatters (which expect `.message` per
+  // violation) render concrete copy instead of "- ruleId: " blanks.
+  message: string;
 }
 
 // Console-scan walks the session-log + browser-reported console messages
@@ -452,7 +456,11 @@ export type RunAudit = (args: string[]) => Promise<number>;
 // ---------------------------------------------------------------------------
 
 export const ANTI_SLOP_LINTER_BUDGET_MS = 50; // regex-only, pre-compiled
-export const A11Y_AXE_BUDGET_MS = 800; // axe-core run on rendered HTML
+// 1500ms covers axe.run on jsdom (~100ms raw) + jsdom JSDOM construction
+// (~500ms first-time module load) + Object.defineProperty splice/restore +
+// overhead. Audit-mode timeout was 800ms which sufficed in the test-suite's
+// already-warm jsdom path but tripped the user-facing CLI audit cold-start.
+export const A11Y_AXE_BUDGET_MS = 1500; // axe-core run on rendered HTML
 export const CONSOLE_SCAN_BUDGET_MS = 2000; // includes 1.5s HMR-quiesce wait
 export const TAB_ORDER_BUDGET_MS = 300; // synchronous DOM traversal
 export const REDUCED_MOTION_BUDGET_MS = 600; // 2 jsdom renders + pixelmatch

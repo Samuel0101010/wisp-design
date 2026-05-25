@@ -38,8 +38,12 @@
 //      decisions).
 //
 // Budget instrumentation: every checkpoint compares Date.now() against the
-// STOP_HOOK_HARD_LIMIT_MS ceiling. Once approaching the limit, we abort
-// remaining checks and emit only what we've found so far.
+// effective limit ceiling (EFFECTIVE_STOP_HOOK_LIMIT_MS). On Linux/macOS
+// this equals STOP_HOOK_HARD_LIMIT_MS (100ms). On Windows, where git process
+// startup alone takes 147-271ms, the effective limit is 200ms with an 80%
+// (160ms) git timeout. Once approaching the limit, we abort remaining checks
+// and emit only what we've found so far. On timeout, a one-line stderr
+// warning is emitted so the user knows the check was skipped.
 
 import { execFileSync } from "node:child_process";
 import { extname } from "node:path";
@@ -48,6 +52,24 @@ import {
   STOP_HOOK_HARD_LIMIT_MS,
   type AntiSlopViolation,
 } from "../contracts/verify.js";
+
+// Windows process-startup overhead for git is typically 147-271ms, well above
+// the default 100ms budget. We use a platform-specific effective limit:
+//   Linux/macOS: 100ms (git returns in 1-3ms; budget is tight on purpose)
+//   Windows:     200ms (git startup alone costs ~165ms p50)
+//
+// The STOP_HOOK_HARD_LIMIT_MS contract value stays at 100ms (the
+// src/contracts/verify.ts floor); this local override only applies to the
+// dispatcher's git-read timeout and its own budget ceiling.
+const IS_WINDOWS = process.platform === "win32";
+const EFFECTIVE_STOP_HOOK_LIMIT_MS = IS_WINDOWS
+  ? 200
+  : STOP_HOOK_HARD_LIMIT_MS;
+// Git timeout is 80% of the effective limit on Windows (to leave margin for
+// the linter after git returns), 25% on Linux/macOS where git is very fast.
+const GIT_TIMEOUT_MS = IS_WINDOWS
+  ? Math.floor(EFFECTIVE_STOP_HOOK_LIMIT_MS * 0.8) // 160ms on Windows
+  : Math.max(20, Math.floor(EFFECTIVE_STOP_HOOK_LIMIT_MS / 4)); // 25ms on Linux/macOS
 
 // UI file extensions the stop-hook lints. Mirror of the linter's set; kept
 // here so the dispatcher's git-diff filter is independent of the dynamic
@@ -70,14 +92,15 @@ const STOP_HOOK_UI_EXTENSIONS: ReadonlySet<string> = new Set([
 // `git diff HEAD --name-only` capped at 50 entries. Empty array when git is
 // absent or the cwd is not a repo. The execFileSync call uses the ARGV form
 // (no shell) so path-injection is impossible.
+//
+// On timeout, logs a one-line warning to stderr so the user knows the check
+// was skipped — then returns [] (non-blocking).
 function stopHookGitChangedFiles(): string[] {
   try {
     const raw = execFileSync("git", ["diff", "HEAD", "--name-only"], {
       cwd: process.cwd(),
       encoding: "utf8",
-      // STOP_HOOK_HARD_LIMIT_MS is 100ms; we give git a quarter of the
-      // budget. On a healthy repo this returns in 1-2ms.
-      timeout: Math.max(20, Math.floor(STOP_HOOK_HARD_LIMIT_MS / 4)),
+      timeout: GIT_TIMEOUT_MS,
     });
     return raw
       .split(/\r?\n/)
@@ -85,7 +108,18 @@ function stopHookGitChangedFiles(): string[] {
       .filter((l) => l !== "")
       .filter((p) => STOP_HOOK_UI_EXTENSIONS.has(extname(p).toLowerCase()))
       .slice(0, 50);
-  } catch {
+  } catch (err) {
+    // Distinguish timeout from other errors (absent git, not a repo, etc.).
+    const isTimeout =
+      err instanceof Error &&
+      ("code" in err
+        ? (err as NodeJS.ErrnoException).code === "ETIMEDOUT"
+        : err.message.includes("ETIMEDOUT") || err.message.includes("timed out"));
+    if (isTimeout) {
+      process.stderr.write(
+        `wisp-design: stop-hook git read timed out (>${GIT_TIMEOUT_MS}ms budget) — anti-slop check skipped this turn\n`,
+      );
+    }
     return [];
   }
 }
@@ -105,10 +139,10 @@ async function drainStdin(): Promise<string> {
 }
 
 // Budget helper — true if the stop hook should bail out NOW to stay under
-// the p99 ceiling. Phase-5 coder calls this between each expensive step
-// (git diff, file read, lint).
+// the p99 ceiling. Uses the platform-adjusted effective limit so Windows
+// gets the expanded 200ms window.
 function budgetExceeded(startedAt: number): boolean {
-  return Date.now() - startedAt > STOP_HOOK_HARD_LIMIT_MS - STOP_HOOK_TAIL_RESERVE_MS;
+  return Date.now() - startedAt > EFFECTIVE_STOP_HOOK_LIMIT_MS - STOP_HOOK_TAIL_RESERVE_MS;
 }
 
 // Stop-hook entry. Wrapped in try/catch so any thrown error degrades to

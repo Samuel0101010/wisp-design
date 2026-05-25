@@ -225,7 +225,13 @@ var AcceptEventSchema = z2.object({
   kind: z2.literal("accept"),
   target: ElementTargetSchema,
   variantId: z2.string().min(1),
-  sessionId
+  sessionId,
+  // Phase 7.8 — Browser includes the accepted variant's CSS so the in-process
+  // accept handler can splice it into source without regenerating from a stub.
+  // Optional for back-compat: older browsers / tests omit this and the handler
+  // falls back to stub regeneration.
+  variantCss: z2.string().optional(),
+  rationale: z2.string().optional()
 });
 var DiscardEventSchema = z2.object({
   kind: z2.literal("discard"),
@@ -354,6 +360,104 @@ var EXIT_ARG = 2;
 // src/agent/skills-index.ts
 var AGENT_DB_CONTROLLER_STUB = "phase-4-stub";
 var INDEXABLE_EXTENSIONS = /* @__PURE__ */ new Set([".md", ".csv"]);
+var STOPWORDS = /* @__PURE__ */ new Set([
+  // English
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "into",
+  "this",
+  "that",
+  "these",
+  "those",
+  "are",
+  "was",
+  "were",
+  "but",
+  "not",
+  "you",
+  "your",
+  "our",
+  "their",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "whom",
+  "how",
+  "why",
+  "can",
+  "will",
+  "would",
+  "could",
+  "should",
+  "have",
+  "has",
+  "had",
+  "all",
+  "any",
+  "some",
+  "more",
+  "most",
+  "much",
+  "than",
+  "then",
+  "them",
+  "they",
+  // German
+  "der",
+  "die",
+  "das",
+  "den",
+  "dem",
+  "des",
+  "ein",
+  "eine",
+  "einer",
+  "eines",
+  "einem",
+  "und",
+  "oder",
+  "aber",
+  "doch",
+  "auch",
+  "noch",
+  "nur",
+  "wie",
+  "was",
+  "wo",
+  "wer",
+  "wen",
+  "wem",
+  "wessen",
+  "ist",
+  "sind",
+  "war",
+  "waren",
+  "mit",
+  "von",
+  "vom",
+  "zur",
+  "zum",
+  "im",
+  "am",
+  "an",
+  "auf",
+  "aus",
+  "bei",
+  "nach",
+  "vor",
+  "ueber",
+  "unter",
+  "fuer",
+  "gegen"
+]);
+var STEM_LEN = 6;
+var FIELD_BOOST_DESCRIPTION = 2;
+var FIELD_BOOST_TITLE = 2;
 var KNOWN_SUB_NAMESPACES = [
   "anchors",
   "directions",
@@ -401,6 +505,40 @@ function deriveSubNamespace(skillsRoot, absPath) {
   }
   return "uncategorized";
 }
+function tokenize(input) {
+  const lower = input.toLowerCase();
+  const raw = lower.split(/[^a-z0-9\-]+/);
+  const out = [];
+  for (const t of raw) {
+    if (t.length < 2) continue;
+    if (STOPWORDS.has(t)) continue;
+    out.push(t.length > STEM_LEN ? t.slice(0, STEM_LEN) : t);
+  }
+  return out;
+}
+function extractDescription(body) {
+  if (!body.startsWith("---")) return "";
+  const end = body.indexOf("\n---", 3);
+  if (end === -1) return "";
+  const fm = body.slice(0, end);
+  const m = fm.match(/^description:\s*(.+)$/im);
+  return m?.[1]?.trim() ?? "";
+}
+function extractTitle(filePath, body) {
+  let stripped = body;
+  if (body.startsWith("---")) {
+    const end = body.indexOf("\n---", 3);
+    if (end !== -1) stripped = body.slice(end + 4);
+  }
+  const h1 = stripped.match(/^\s*#\s+(.+)$/m);
+  if (h1 && h1[1] !== void 0) return h1[1].trim();
+  if (filePath.endsWith(".csv")) {
+    const firstLine = body.split(/\r?\n/, 1)[0] ?? "";
+    if (firstLine.trim() !== "") return firstLine.trim();
+  }
+  const base = filePath.split("/").pop() ?? filePath;
+  return base.replace(/\.(md|csv)$/i, "");
+}
 async function indexSkills(opts) {
   const parsed = SkillsIndexOptionsSchema.parse(opts);
   const start = Date.now();
@@ -434,7 +572,7 @@ async function searchSkills(query, opts) {
   const skillsRoot = resolve2(opts?.skillsRoot ?? "skills");
   const trimmedQuery = query.trim();
   if (trimmedQuery === "") return [];
-  const tokens = trimmedQuery.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
+  const tokens = tokenize(trimmedQuery);
   if (tokens.length === 0) return [];
   const allFiles = await walkDir(skillsRoot);
   const indexable = allFiles.filter((p) => {
@@ -454,19 +592,23 @@ async function searchSkills(query, opts) {
     const sub = deriveSubNamespace(skillsRoot, file);
     void parsed.namespace;
     const lower = body.toLowerCase();
+    const descLower = extractDescription(body).toLowerCase();
+    const titleLower = extractTitle(file, body).toLowerCase();
     let score = 0;
     for (const tok of tokens) {
       if (tok === "") continue;
       let idx = 0;
-      let hits = 0;
+      let bodyHits = 0;
       while (idx < lower.length) {
         const found = lower.indexOf(tok, idx);
         if (found === -1) break;
-        hits += 1;
+        bodyHits += 1;
         idx = found + tok.length;
-        if (hits > 100) break;
+        if (bodyHits > 100) break;
       }
-      score += hits;
+      const descHits = descLower === "" ? 0 : countOccurrences(descLower, tok);
+      const titleHits = titleLower === "" ? 0 : countOccurrences(titleLower, tok);
+      score += bodyHits + descHits * FIELD_BOOST_DESCRIPTION + titleHits * FIELD_BOOST_TITLE;
     }
     if (score === 0) continue;
     const normalized = score / Math.sqrt(Math.max(body.length, 1));
@@ -481,6 +623,18 @@ async function searchSkills(query, opts) {
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, parsed.topK);
+}
+function countOccurrences(haystack, needle) {
+  if (needle === "") return 0;
+  let idx = 0;
+  let n = 0;
+  while (idx < haystack.length) {
+    const found = haystack.indexOf(needle, idx);
+    if (found === -1) break;
+    n += 1;
+    idx = found + needle.length;
+  }
+  return n;
 }
 function buildSnippet(body, tokens) {
   const lower = body.toLowerCase();

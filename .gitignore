@@ -25,9 +25,16 @@ tmp/
 Thumbs.db
 
 # Local-only Claude / agent tooling — never commit
+.claude/
 .claude/settings.local.json
 .claude/wisp-design/
 .claude/wisp-design.log
+
+# Backup / scratch files from manual recovery
+*.bak
+*.clean
+*.orig
+*.local.md
 
 # Per-project plugin state (writes by `/wisp-design live`) — local-only
 .wisp/

@@ -210,7 +210,11 @@ function reduce(
     }
 
     case "generate-variants-arrived": {
-      if (state.kind !== "generating") return state;
+      // Phase 7.8 — accept from BOTH generating and cycling. The latter
+      // handles the late-arrival case where a 30s placeholder fallback
+      // already moved us into cycling but Claude's real variants finally
+      // landed: we swap them in, reset activeIndex, clear param overrides.
+      if (state.kind !== "generating" && state.kind !== "cycling") return state;
       const p = generateArrived(payload);
       if (!p || p.variants.length === 0) return state;
       return {

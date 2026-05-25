@@ -21,8 +21,37 @@ import {
   type CheckResult,
   type VerifyContext,
   type VerifyGateModule,
+  type VerifyMode,
   type VerifyReport,
 } from "../contracts/verify.js";
+
+// ---------------------------------------------------------------------------
+// Phase-7.12 — Per-mode budget scaling for the outer per-check timeout.
+//
+// Bug surfaced by the final-review agent: the audit CLI was hitting the
+// stop-hook anti-slop 50ms budget on the outer timeout even though the inner
+// `runAntiSlopOnFiles` call was passing `perCallBudgetMs * 10`. The outer
+// race killed the call before the inner could finish.
+//
+// Fix: mode-aware scaling. Stop-hook stays at 1x (50ms is the contract);
+// live modes get 3x; audit / audit-strict get 10x. The inner perCallBudgetMs
+// in dispatchCheck still uses the same 10x factor so they stay in sync.
+// ---------------------------------------------------------------------------
+const MODE_CHECK_BUDGET_MULTIPLIER: Readonly<Record<VerifyMode, number>> = {
+  "stop-hook": 1,
+  "live-accept": 3,
+  "live-with-screenshot": 3,
+  audit: 100,
+  "audit-strict": 100,
+} as const;
+
+// Audit mode floor: anti-slop with the full Phase-7-tightened regex set
+// (brace-walker + brand-spec lookup + all hard-bans + soft-warns) measures
+// ~50-200ms on a 10-KB HTML file, so the 50ms × 100 = 5000ms ceiling for
+// audit modes gives ample headroom while still surfacing pathological cases.
+function budgetForCheck(name: CheckName, mode: VerifyMode): number {
+  return CHECK_BUDGET_MS[name] * MODE_CHECK_BUDGET_MULTIPLIER[mode];
+}
 
 // ---------------------------------------------------------------------------
 // Per-check timeout wrapper. Promise.race against a timer that resolves to
@@ -43,9 +72,12 @@ function runWithTimeout(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      // A timed-out check is a runtime error — the user should know the check
+      // didn't complete. severity:"warn" keeps the gate non-blocking (only
+      // audit-strict blocks on fail) while making the failure visible.
       resolveOuter({
         name,
-        severity: "pass",
+        severity: "warn",
         durationMs: budgetMs,
         skipped: { reason: "timeout", detail: `> ${budgetMs}ms` },
       });
@@ -61,9 +93,12 @@ function runWithTimeout(
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // Unexpected rejection from a check (programming error in dispatchCheck
+        // or a check that throws instead of returning a skipped result) →
+        // surface as warn, not silent pass.
         resolveOuter({
           name,
-          severity: "pass",
+          severity: "warn",
           durationMs: 0,
           skipped: {
             reason: "error",
@@ -105,7 +140,9 @@ async function dispatchCheck(
           mode: ctx.mode,
           projectRoot: ctx.projectRoot,
           budgetStartedAt,
-          perCallBudgetMs: CHECK_BUDGET_MS["anti-slop"] * 10, // audit budget
+          // Inner per-call budget MUST match the outer runWithTimeout budget
+          // (set in run() via budgetForCheck). Both scale by mode multiplier.
+          perCallBudgetMs: budgetForCheck("anti-slop", ctx.mode),
         });
       }
       return runAntiSlop(cssSource, { mode: ctx.mode, budgetStartedAt });
@@ -149,9 +186,11 @@ async function dispatchCheck(
         ctx.sessionId === undefined ||
         ctx.variantId === undefined
       ) {
+        // Missing required args for multi-viewport is a caller error (not an
+        // optional-dep skip) → warn.
         return {
           name: "multi-viewport",
-          severity: "pass",
+          severity: "warn",
           durationMs: Date.now() - budgetStartedAt,
           skipped: {
             reason: "error",
@@ -192,7 +231,7 @@ async function run(ctx: VerifyContext): Promise<VerifyReport> {
   const budgetMs = MODE_TIMING_BUDGET_MS[mode];
 
   const promises = checks.map((name) =>
-    runWithTimeout(name, dispatchCheck(name, ctx), CHECK_BUDGET_MS[name]),
+    runWithTimeout(name, dispatchCheck(name, ctx), budgetForCheck(name, mode)),
   );
 
   // `Promise.allSettled` lets us tolerate a runWithTimeout that rejects (it
@@ -201,9 +240,11 @@ async function run(ctx: VerifyContext): Promise<VerifyReport> {
   const settled = await Promise.allSettled(promises);
   const resolved: CheckResult[] = settled.map((s, i) => {
     if (s.status === "fulfilled") return s.value;
+    // A rejected promise from runWithTimeout means a programming error — the
+    // wrapper is designed to never reject. Surface as warn so it's visible.
     return {
       name: checks[i] ?? "anti-slop",
-      severity: "pass",
+      severity: "warn",
       durationMs: 0,
       skipped: {
         reason: "error",

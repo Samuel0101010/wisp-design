@@ -46,6 +46,12 @@ export const STATE_TRANSITIONS: readonly StateTransition[] = [
   { from: "generating", to: "cycling", event: "generate-variants-arrived" },
   { from: "generating", to: "configuring", event: "generate-error" },
   { from: "generating", to: "configuring", event: "generate-cancel" },
+  // Phase 7.8 — accept variant-swap from cycling too. Without this, when the
+  // 30s placeholder fallback fires before the real agent variants arrive,
+  // the late real variants get rejected (state already in cycling). Allowing
+  // cycling → cycling on `generate-variants-arrived` means the placeholder
+  // is automatically replaced when the agent catches up.
+  { from: "cycling", to: "cycling", event: "generate-variants-arrived" },
   { from: "cycling", to: "cycling", event: "cycle-next" },
   { from: "cycling", to: "cycling", event: "cycle-prev" },
   { from: "cycling", to: "cycling", event: "cycle-set-active" },

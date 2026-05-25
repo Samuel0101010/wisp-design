@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Button No Label</title>
+</head>
+<body>
+  <main>
+    <h1>Settings</h1>
+    <button>
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <path d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+    <p>Button above has no accessible label (axe: button-name, critical, wcag2a).</p>
+    <p>Note: button-name is WCAG Level A. severityFor("A", "critical") = "warn".
+       Only AA-level violations hard-block per a11y-axe.ts design.</p>
+  </main>
+</body>
+</html>

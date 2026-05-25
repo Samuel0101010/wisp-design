@@ -156,7 +156,7 @@ describe("runMultiViewport — skip semantics", () => {
     expect(res.name).toBe("multi-viewport");
   });
 
-  it("skips with optional-dep-missing or chromium-missing when missing", async () => {
+  it("skips with optional-dep-missing when playwright/chromium missing", async () => {
     const hasPw = await playwrightAvailable();
     const hasChromium = hasPw ? await chromiumAvailable() : false;
     const res = await runMultiViewport({
@@ -166,23 +166,34 @@ describe("runMultiViewport — skip semantics", () => {
       projectRoot,
     });
     if (!hasPw) {
+      // Optional-dep genuinely missing → graceful skip, severity stays pass.
       expect(res.skipped?.reason).toBe("optional-dep-missing");
+      expect(res.severity).toBe("pass");
     } else if (!hasChromium) {
       expect(res.skipped?.reason).toBe("optional-dep-missing");
+      expect(res.severity).toBe("pass");
     } else {
-      // Both present: the launch will likely fail because nothing is actually
-      // listening on the port — that surfaces as skipped/error. Acceptable.
-      expect(["pass"]).toContain(res.severity);
+      // Both present: the launch will likely fail because nothing is listening
+      // on the port — that's a runtime error → warn. The user should see it.
+      expect(["pass", "warn"]).toContain(res.severity);
     }
   });
 
-  it("severity is 'pass' in skip case (so verdict isn't poisoned)", async () => {
+  it("severity is 'pass' only for optional-dep-missing, warn for runtime errors", async () => {
+    const hasPw = await playwrightAvailable();
+    const hasChromium = hasPw ? await chromiumAvailable() : false;
     const res = await runMultiViewport({
       livePreviewUrl: "http://127.0.0.1:31337",
       sessionId: "test-sid",
       variantId: "v0",
       projectRoot,
     });
-    expect(res.severity).toBe("pass");
+    if (!hasPw || !hasChromium) {
+      // Optional-dep skip: honest pass (user installed nothing, not a failure).
+      expect(res.severity).toBe("pass");
+    } else {
+      // Runtime error (connection refused): honest warn so user sees failure.
+      expect(["pass", "warn"]).toContain(res.severity);
+    }
   });
 });

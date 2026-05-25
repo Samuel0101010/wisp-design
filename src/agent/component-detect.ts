@@ -417,28 +417,33 @@ export async function detect(
     }
   }
 
-  // 4. Resolve per-lib average + fold in package.json score.
-  //    package.json is treated as one additional "file" worth of signal that
-  //    averages alongside the source files. This means a project with only
-  //    package.json signalling (no source matches) gets the raw package.json
-  //    weight as its confidence — sensible: an installed dep is a strong
-  //    standalone signal.
+  // 4. Resolve per-lib confidence: average-of-signalling-source-files PLUS
+  //    package.json score, clamped to [0,1].
+  //
+  //    Phase-6 used `(sourceSum + pkg) / (sourceCount + 1)` which DRAGGED
+  //    confidence DOWN as additional source files signalled — exactly the
+  //    opposite of the intended "more signal = more confidence". Concretely,
+  //    a tailwind project with config + className files saw confidence
+  //    (0.5+0.3+0.2)/3=0.333, falling below threshold despite three strong
+  //    signals. The verifier flagged this as launch-blocker #16.
+  //
+  //    The new formula treats package.json as an additive standalone signal
+  //    (an installed dep IS strong evidence on its own), while source-file
+  //    signals contribute their averaged per-file score (averaging across
+  //    signalling-files keeps the algorithm robust to repo size — a single
+  //    matching file in a 500-file repo still shows up). The clamp prevents
+  //    runaway saturation when both sides are strong.
   const finalConfidence = new Map<ComponentLib, number>();
   for (const lib of ALL_LIBS) {
     const sourceSum = sumPerLib.get(lib) ?? 0;
     const sourceCount = fileCountPerLib.get(lib) ?? 0;
     const pkgScore = pkgPerLib.get(lib) ?? 0;
-    let total = sourceSum;
-    let denom = sourceCount;
-    if (pkgScore > 0) {
-      total += pkgScore;
-      denom += 1;
-    }
-    if (denom === 0) {
+    if (sourceCount === 0 && pkgScore === 0) {
       finalConfidence.set(lib, 0);
       continue;
     }
-    finalConfidence.set(lib, clamp01(total / denom));
+    const sourceAvg = sourceCount > 0 ? sourceSum / sourceCount : 0;
+    finalConfidence.set(lib, clamp01(sourceAvg + pkgScore));
   }
 
   // 5. Pick primary.

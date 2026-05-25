@@ -48,6 +48,14 @@ export default defineConfig([
       "agent/component-detect": "src/agent/component-detect.ts",
       "agent/morph": "src/agent/morph.ts",
       "source/structure-variant-mode": "src/source/structure-variant-mode.ts",
+      // Phase 7 — `live` and `init` CLI runners. Skeleton + scaffolding live
+      // in src/agent/{live,init}.ts; contracts in src/contracts/{live,init}.ts.
+      "agent/live": "src/agent/live.ts",
+      "agent/init": "src/agent/init.ts",
+      // Phase 7.9 — headless claude invocation wrapper. Spawns `claude -p`
+      // for each `generating` event so the live daemon delivers real LLM
+      // variants without requiring an interactive Claude session.
+      "agent/claude-invoke": "src/agent/claude-invoke.ts",
     },
     format: ["esm"],
     target: "node20",

@@ -214,7 +214,16 @@ export async function acceptVariant(
     );
   }
 
-  const scopeSelector = `[data-wisp-target="${parsed.targetId}"]`;
+  // The targetId IS the element's CSS selector (e.g.
+  // `h3.font-medium.text-base.text-neutral-900`) — that's what
+  // browser/picker.ts builds. Use it directly as the carbonize scope
+  // selector so the permanent style actually matches the element. The
+  // previous design synthesised a `[data-wisp-target="…"]` attribute
+  // selector that was never written onto the DOM, so the CSS never
+  // applied — bug found Phase 7.1. We still validate against safe
+  // chars so a malicious caller cannot inject arbitrary CSS through
+  // the selector string.
+  const scopeSelector = sanitizeScopeSelector(parsed.targetId);
   const emittedCss = parsed.carbonize
     ? carbonize(
         `@scope ([data-wisp-variant="${parsed.variantId}"]) {\n${variantCss}\n}`,
@@ -306,6 +315,29 @@ function buildPermanentReplacement(input: ReplacementInput): string {
   ]
     .filter((s) => s !== "")
     .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// sanitizeScopeSelector — accept only characters that can legitimately
+// appear in the kind of class-chain selectors picker.ts emits
+// (`tag.class.class[.class]…` plus optional `#id` plus descendant combinator
+// space). This is a defense-in-depth check: the targetId comes from the
+// agent's poll-loop which itself validates browser events, so we never
+// expect anything weird here — but rejecting unexpected chars protects the
+// generated CSS file from injection if a future caller misuses the API.
+// ---------------------------------------------------------------------------
+
+function sanitizeScopeSelector(targetId: string): string {
+  const t = targetId.trim();
+  // Allow letters / digits / `-_.#:` / whitespace / brackets / quotes / `>` / `*` / `,`.
+  // This covers tag, class, id, attribute, descendant, child, universal, group.
+  // Reject `{` `}` `;` so a malicious targetId cannot break out of the CSS rule.
+  if (!/^[A-Za-z0-9_\-\.#:\[\]"'\s>*,()=^$|~]+$/.test(t)) {
+    throw new Error(
+      `acceptVariant: targetId contains unsafe characters — ${JSON.stringify(t.slice(0, 40))}`,
+    );
+  }
+  return t;
 }
 
 // ---------------------------------------------------------------------------

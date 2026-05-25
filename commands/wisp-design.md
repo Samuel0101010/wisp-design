@@ -6,83 +6,157 @@ allowed-tools: Read, Write, Edit, Bash(node *), Bash(npm *), Bash(npx *), Glob, 
 
 # /wisp-design
 
-Top-level dispatcher für den `wisp-design` Live-Loop. Routet anhand `$ARGUMENTS` zu einem der Subcommands. Die ausführliche Logik pro Subcommand wird in folgenden Phasen implementiert — dieses File ist der einheitliche Eingangspunkt.
+Top-level dispatcher für den `wisp-design` Live-Loop. Routet anhand `$ARGUMENTS` zu einem der Subcommands.
 
 ## Subcommands
 
 | Befehl | Phase | Zweck |
 |---|---|---|
-| `live` | 1-4 | Boot Bridge (auto-port, token), inject `<script>`, starte Long-Poll-Loop. "open localhost:PORT" |
-| `init` | 4 | Projekt-Setup: Stack-Scan, `.wisp/brand-spec.json`, Design-Tokens extrahieren, 4 Narrative Questions stellen |
-| `poll-once [--timeout N] [--cursor C]` | **4 ✓** | Fetch ein Batch Bridge-Events (long-poll, ≤270s slice). Returns JSON `PollOnceResult` auf stdout. |
-| `post-event --kind K --payload <json>` | **4 ✓** | Push Event zurück an Bridge (`cycling`, `generating`, `error`, …). Returns `{ ok, cursor }`. |
-| `skills index [--namespace N]` | **4 ✓** | Re-index `skills/data/*` in AgentDB HNSW unter Namespace `wisp-design`. |
-| `skills search <query> [--top-k K] [--namespace N]` | **4 ✓** | Query indexierten Korpus, returns topK `SkillsSearchResult[]` als JSON. |
-| `sync --from <vault-path> [--no-index]` | **4 ✓** | Copy vault MD-files in `skills/data/patterns/`, re-index. Explicit only — kein watcher. |
-| `audit [paths...] [--mode fast\|full\|strict] [--screenshot] [--format text\|json\|markdown] [--fail-on-warn]` | **5 ✓** | Verification-Gate auf geänderten Files (oder explizit übergebenen paths). `fast` = anti-slop only (Stop-hook subset, <100ms). `full` = alle 6 checks (anti-slop + a11y-axe + console-scan + tab-order + reduced-motion + multi-viewport mit `--screenshot`). `strict` = hard-block on hard-bans / AA-fails. Default mode `fast`, default Strenge **warn** (siehe `docs/verification-gate.md`). |
-| `history [--task <id>] [--list] [--replay] [--format text\|json\|markdown]` | **6 ✓** | Session-Viewer: rendert `.wisp/sessions/<id>.jsonl` als Timeline (text default, JSON für tooling, Markdown für docs). Siehe `docs/session-replay.md`. |
-| `morph --variant-a <id> --variant-b <id> --t <0..1>` | **6 ✓** (internal) | Print interpolierte `@scope`-CSS für Morph-Slider (Improvement #3). Browser ruft dies pro Slider-Tick — pure stdout, kein State. |
-| `policy [--propose] [--apply <axis>=<value>]` | **6 ✓** | `--propose`: analysiert letzte N Accepts und schlägt Policy-Axis vor. `--apply density=generous`: schreibt in `.wisp/policy.md` (Improvement #5). |
-| `tokens extract` | 4 | Sample `getComputedStyle` über laufende App, cluster, schreibe `.wisp/design-tokens.json` |
-| `doctor [--fix]` | 0 ✓ | Verifiziert Manifest, Hooks, Build. Soll OK zurückgeben. |
+| `live` | **7.8 ✓** | Boot Bridge in BACKGROUND, dann poll-loop in der aktiven Claude-Session. Du (Claude) bist der Variant-Generator. |
+| `init` | 7 ✓ | Projekt-Setup: Stack-Scan, `.wisp/brand-spec.json`, Design-Tokens, 4 Narrative Questions |
+| `poll-once [--timeout N] [--cursor C]` | 4 ✓ | One-shot fetch eines Bridge-Event-Batches (long-poll, ≤270s). Returns JSON. |
+| `post-event --kind K --payload <json>` | 4 ✓ | Push event zurück an Bridge (z.B. cycling mit variants). Returns `{ ok, cursor }`. |
+| `skills index|search <q>` | 4 ✓ | Re-index / query Skill-Korpus in AgentDB HNSW. |
+| `sync --from <vault-path>` | 4 ✓ | Vault MD-files → `skills/data/patterns/`. |
+| `audit [paths...] [--mode fast|full|strict]` | 5 ✓ | Verification-Gate (anti-slop + a11y + console + tab-order + reduced-motion). |
+| `history [--task ID|--list|--replay]` | 6 ✓ | Session-Viewer für `.wisp/sessions/<id>.jsonl`. |
+| `morph --variant-a A --variant-b B --t 0..1` | 6 ✓ | Interpolierte `@scope`-CSS für Morph-Slider. |
+| `policy [--propose|--apply <axis>=<val>]` | 6 ✓ | `.wisp/policy.md` proposal-flow. |
+| `doctor [--fix]` | 0 ✓ | Verifiziert Manifest, Hooks, Build. |
 
-## Skill Auto-Trigger
+## ⚡ Wenn der User `/wisp-design live` aufruft
 
-Wenn der User `/wisp-design live` aufruft, bootet der CLI die Bridge und gibt
-`port` + `token` zurück. Die Claude-Code-Session lädt dann automatisch den
-`wisp-design` Skill (`skills/wisp-design/SKILL.md`), der die Loop-Logik
-encoded:
+**Zwei Modi — primary first:**
+
+### Modus A — `--external-agent` (Opus 4.7 in active session, **Primary, Default**)
+
+Die Bridge läuft als Daemon im Hintergrund, **du** (Opus 4.7 im aktiven Chat) bist der Variant-Generator. Jeder `generating`-Event aus dem Browser-Overlay landet als **automatische Chat-Notification** in deinem Turn — ohne dass der User tippen muss. Du designst Varianten, POSTest zurück, Browser rendert. Kein Daemon-Spawn-Claude, keine $-Kosten pro Variant-Set, kein Latenz-Cap.
+
+**Setup (3 Schritte, dann lebt es bis Session-Ende):**
+
+**Schritt A1 — Daemon im Hintergrund** (via `Bash` mit `run_in_background: true`):
 
 ```
-while bridge alive:
-  result = Bash(wisp-design poll-once --timeout 270000 [--cursor C])
-  for event in result.events:
-    match event.kind:
-      "configure"  → reason about design (use skills/reference/live.md),
-                     post `cycling` via wisp-design post-event
-      "accept"     → wisp-design accept --session SID --variant VID
-      "discard"    → wisp-design discard --session SID --target TID
-      "annotation" → log to .wisp/sessions/<id>.jsonl
-      else         → ignore
-  if result.shouldRetry: re-invoke poll-once with cursor=result.cursor
+node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" live --external-agent --quiet [user-args]
 ```
 
-Der Skill ist auto-getriggert; der User muss ihn NICHT manuell laden. Phase 4
-liefert das CLI + den Skill; die Reasoning-Schleife ist deklarativ.
+`--external-agent` impliziert `--agent-driven` aber **deaktiviert** den internen `claude -p` Spawn — generating-events bleiben in der Queue für SSE-Broadcast. Daemon handelt weiterhin `accept`/`discard`/`annotation`/source-splice in-process.
 
-## Steps
+Nach ~1.5s `BashOutput` lesen → `{port, token, bridgeUrl, sessionId}` extrahieren.
 
-1. **Parse `$ARGUMENTS`**: First token ist Subcommand, Rest sind Args. Wenn leer → zeige Hilfe inkl. obiger Tabelle.
+**Schritt A2 — Monitor auf SSE** (via `Monitor`-Tool, persistent):
 
-2. **Route**:
-   - `live` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" live <args>` (boots bridge in background, prints port + token URL)
-   - `init` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" init <args>` (interaktiver Wizard mit 4 Narrative Questions)
-   - `poll-once` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" poll-once <args>` (one-shot, JSON-stdout)
-   - `post-event` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" post-event <args>`
-   - `skills` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" skills <args>` (subcommands: `index`, `search`)
-   - `sync` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" sync <args>`
-   - `audit` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" audit <args>`
-   - `history` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" history <args>`
-   - `morph` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" morph <args>` (internal — Browser-side morph-slider; nicht für End-User-Aufruf gedacht)
-   - `policy` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" policy <args>`
-   - `tokens` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" tokens <args>`
-   - `doctor` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" doctor <args>`
-   - sonst → fehler + Hilfe.
+```bash
+while true; do
+  curl -sN "http://127.0.0.1:<port>/events?token=<token>" 2>&1 \
+    | grep -E --line-buffered '"kind":"(generating|accept|discard|annotation|error)"'
+  sleep 2
+done
+```
 
-3. **Print result** inline. Bei `live` zusätzlich den Pick-Hotkey-Hint ausgeben.
+Mit `persistent: true`, `timeout_ms: 3600000`. Jeder user-driven Event (`generating` = neuer Auftrag, `accept`/`discard` = Entscheidung des Users, `annotation` = Notiz, `error` = Bridge-Fehler) wird zu **einer Chat-Notification** mit dem vollständigen Event-JSON im `<event>` Tag. `cycling`/`pick`/`parameter-change`/`heartbeat` werden ausgefiltert (Noise).
+
+**Schritt A3 — User informieren + den Turn beenden**:
+
+```
+✓ wisp-design ready (external-agent + Monitor-SSE)
+  URL: http://127.0.0.1:<port>
+  Snippet for your <head>:
+    <script id="wisp-design-live" src="http://127.0.0.1:<port>/live.js?token=<token>"></script>
+
+  Pick any element, type your wish, click Generate.
+  I (Opus 4.7) will design 3 distinct variants live in this chat.
+  Stop: just say "stop wisp-design" — I'll kill the daemon + Monitor.
+```
+
+**Schritt A4 — Wenn eine Monitor-Notification ankommt** (Event-Loop, automatisch pro Notification):
+
+Du bekommst eine Notification mit dem rohen `data: {...}` Line. Parse das JSON, lies `target.selector`, `target.tag`, `freeText`, `variantCount`, `sessionId`.
+
+Generiere **`variantCount` DISTINCTE Varianten** (Default 3):
+- Jede auf einer anderen primären Design-Achse: **hierarchy / layout / typography / color / density**. Drei Varianten derselben Achse = SLOP, verboten.
+- Jede Variant: `:scope, :scope * { … !important; }` damit Tailwind-Utilities geschlagen werden. Für struktur-Tags (ARTICLE, SECTION, DIV) zusätzlich `:scope > <child-selector>` für gezielte Kinder-Targeting.
+- Tunable Properties als CSS-Vars (`--wisp-pad`, `--wisp-weight`) mit `/* @param: kind=range min=0 max=24 step=2 label="padding" */`.
+- **Anti-Slop hard-bans** (nie generieren): purple-to-blue gradient, glassmorphism (backdrop-blur) ohne Begründung, hero-metric-template (98%/3.2x/24/7), gradient-text-headline, side-stripe (1-3px solid left border), default-tailwind-blue ohne brand-token, em-dash-UI.
+- Jede Variant: 1-Satz `rationale` ≤180 chars, axis-attributed.
+- v0 ist immer Baseline: `{"id":"v0","css":"/* baseline */","rationale":"Baseline — original."}`.
+
+Schreibe das Payload nach `.wisp/cycling-<timestamp>.json`:
+
+```json
+{
+  "kind": "cycling",
+  "target": <event.target>,
+  "variants": [
+    { "id": "v0", "css": "/* baseline */", "rationale": "Baseline." },
+    { "id": "v1", "css": ":scope > h3 { font-weight: 700 !important; letter-spacing: -0.02em !important; }", "rationale": "Heavier headline + tighter tracking creates editorial hierarchy." },
+    { "id": "v2", "css": ":scope { padding: 2em !important; } :scope > * + * { margin-top: 0.75em !important; }", "rationale": "Generous density — air between lines makes the card feel premium." }
+  ],
+  "activeIndex": 0,
+  "sessionId": "<event.sessionId>"
+}
+```
+
+POST zurück via Helper:
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/post-cycling.mjs" .wisp/cycling-<ts>.json
+```
+
+Helper liest port.lock automatisch, POSTet, validiert Response. Browser SSE rendert die 3 Varianten sofort — der User kann ⌘+1/2/3 durchschalten, Slider tweaken, Accept klicken.
+
+**Schritt A5 — Accept/Discard handhabt Daemon selbst.** Der Daemon hat den `--agent-driven` Code-Pfad: `accept` triggert `acceptVariant` mit dem `variantCss` aus dem Browser-Payload, source-splice + carbonize automatisch. Du musst auf SSE-Notifications für non-generating Events NICHT reagieren — die Monitor-Filter blendet die aus.
+
+**Schritt A6 — Stop**: Wenn User "stop" sagt: 
+1. `TaskStop bi8...` (oder welche Monitor-Task-ID) — killt Monitor
+2. Background-Bash mit der Daemon-PID killen (lies aus port.lock)
+
+---
+
+### Modus B — `--agent-driven` (Headless Haiku-Daemon, autonomous)
+
+Wenn der User explizit "ich will Daemon-mode, kein interaktives Designen" sagt (oder dieser Chat eine Sub-Session ohne Tool-Access ist):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" live --agent-driven --quiet
+```
+
+Daemon spawnt für jeden `generating`-Event ein `claude -p --model haiku` mit minimal system-prompt (~6k token cache, ~$0.04/set, 10–60s Latenz). Du musst NICHT pollen — der Daemon arbeitet autonom. Nur Connection-Info ausgeben und Turn beenden.
+
+---
+
+### Variant-Generation Guidelines (für Modus A)
+
+- **5 primäre Achsen**: hierarchy (size/weight), layout (block/flex/grid), typography (family/line-height/letter-spacing), color (token/accent/saturation), density (padding/gap/line-height).
+- **Komponent-Lib-aware**: Wenn `event.target.selector` shadcn-Klassen enthält (`text-muted-foreground`, `bg-card`, etc.) — bevorzuge prop-edits-style CSS (border-radius, ring, shadow). Wenn raw Tailwind (`text-blue-500 px-4`) — direkte CSS-overrides okay.
+- **Component-Type-aware** (wichtig!): 
+  - `H1`-`H6`: typography axes (weight, tracking, line-height, letter-spacing)
+  - `BUTTON`: padding, radius, weight, color
+  - `ARTICLE` / `SECTION` / `DIV` (card-like): density, layout, shadow, border-radius
+  - `INPUT`: border, padding, focus-ring
+  - `IMG`: aspect-ratio, object-fit, border-radius, filter
+- **Distinct rule**: Drei Varianten → drei verschiedene Achsen. Drei color-shifts derselben card = SLOP.
+- **Brand-spec-aware**: Wenn `.wisp/brand-spec.json` existiert, lade es und referenziere Tokens. Wenn `.wisp/design-tokens.json` existiert, dito.
+
+## Andere Subcommands
+
+Wenn der User NICHT `live` aufruft, sondern z.B. `audit` oder `history`:
+
+- `init` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" init <args>`
+- `poll-once` / `post-event` → die jeweiligen Bash-Calls (one-shot)
+- `skills <index|search>` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" skills <args>`
+- `sync --from …` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" sync <args>`
+- `audit [paths] [--mode]` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" audit <args>` (Verification-Gate)
+- `history [--list|--task|--replay]` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" history <args>`
+- `morph` (internal, Browser ruft selbst) — sollte selten Direct-User-Aufruf sein
+- `policy [--propose|--apply]` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" policy <args>`
+- `doctor [--fix]` → `node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" doctor <args>`
+- leer / `--help` → diese Tabelle ausgeben
 
 ## Notes
 
-- Phase 4 ✓: `poll-once`, `post-event`, `skills index`, `skills search`, `sync`. Siehe `docs/agent-loop.md` für die volle Architektur.
-- Phase 5 ✓: `audit` mit 3 modes (`fast`/`full`/`strict`). Siehe `docs/verification-gate.md` für mode-hierarchy, per-check budgets, override-flow.
-- Phase 6 ✓: `history`, `morph`, `policy`. Siehe `docs/session-replay.md` für JSONL-Format, Timeline-Reconstruction, Policy-Proposal-Flow; `docs/component-detection.md` für Component-Lib-Erkennung (Improvement #11). `morph` ist Browser-internal — Slider zwischen Variants A/B (Improvement #3).
-- `live` lädt das Browser-Runtime `live.js` per `<script src=…>`-Injection. Reversibel via `live --stop`.
-- Hot-Path Budget: variant-arrival p95 ≤ 3s. Verification-Gate (Phase 5) läuft parallel zu LLM-Generate, nicht sequenziell.
-- **Audit Modes & Strenge** (Lead-confirmed, research/synthesis.md Open Decision #7):
-  - `--mode fast` (default): anti-slop only, warn-default. Mirror von Stop-hook.
-  - `--mode full`: alle 6 checks, warn-default. `--screenshot` aktiviert multi-viewport (4 widths × 2 modes via Playwright optionalDep).
-  - `--mode strict`: alle 6 checks, **hard-block** on hard-bans und AA-fails. Exit-Code 1 bei block.
-  - `--fail-on-warn`: CI-knob — promoteet warn zu exit-1 in jedem mode.
-- **Stop-hook**: läuft anti-slop on git diff bei jedem Claude turn, p99 < 100ms. Hard-ban hits zu stderr (warn). `WISP_DESIGN_STRICT=1` promoteet zu `permissionDecision: "block"`.
-- `poll-once` ist eine **one-shot** Primitive — die while-Schleife lebt im Skill (`skills/wisp-design/SKILL.md`), NICHT in der CLI.
-- `sync` ist explicit-only. Kein File-Watcher, kein Push-Script (Open Decision #6 in `research/synthesis.md`).
+- Plugin-Schema: siehe `~/.claude/CLAUDE.md` Section "Claude Code plugin schema (verified end-to-end)".
+- `dist/` ist im Repo committed; plugin-clone hat keinen build step.
+- `--agent-driven` mode ist Phase 7.8 — vorher rannte ein in-process stub-catalog für variants.
+- `sync` ist explicit-only (kein File-Watcher, kein Push).
+- `audit --mode strict` exit-code 1 bei hard-ban hits. `--fail-on-warn` promoteet warn zu exit-1.
+- Stop-hook läuft anti-slop on git-diff bei jedem Claude-Turn, p99 < 100ms. `WISP_DESIGN_STRICT=1` macht hard-block.

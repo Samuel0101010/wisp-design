@@ -457,6 +457,21 @@ async function logParamChanged(sessionId, evt, opts) {
     opts.projectRoot
   );
 }
+async function logAnnotationAdded(sessionId, evt, opts) {
+  await appendEntry(
+    {
+      ts: nowIso(),
+      sessionId,
+      kind: "annotation-added",
+      detail: {
+        targetId: evt.targetId,
+        annotationKind: evt.annotationKind,
+        note: evt.note
+      }
+    },
+    opts.projectRoot
+  );
+}
 async function logPolicyProposalShown(sessionId, evt, opts) {
   await appendEntry(
     {
@@ -552,6 +567,7 @@ var sessionLogger = {
   logConfigure,
   logCycleActiveChanged,
   logParamChanged,
+  logAnnotationAdded,
   logPolicyProposalShown,
   logPolicyProposalAccepted,
   logPolicyProposalDeclined,

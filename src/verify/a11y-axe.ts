@@ -47,7 +47,15 @@ interface AxeResults {
 
 async function loadAxe(): Promise<AxeModule | null> {
   try {
-    return (await import("axe-core")) as unknown as AxeModule;
+    const mod = (await import("axe-core")) as unknown as { default?: AxeModule } & AxeModule;
+    // axe-core ships CJS. On Node 22's ESM bridge, a CJS module exposes its
+    // exports as the `default` property of the imported namespace. Older
+    // versions / different loaders return the same object as the top-level
+    // namespace. Pick whichever side carries `.run`.
+    if (mod.default !== undefined && typeof (mod.default as { run?: unknown }).run === "function") {
+      return mod.default;
+    }
+    return mod as AxeModule;
   } catch {
     return null;
   }
@@ -113,34 +121,63 @@ function mapAxeViolation(v: AxeViolation): A11yViolation {
           : (n.target[0] as string);
     return n.html !== undefined ? { selector, html: n.html } : { selector };
   });
+  // Concrete message for the formatter (audit.ts expects `.message` per
+  // violation). axe's `help` is the human-readable title (e.g. "Buttons
+  // must have discernible text"); fall back to ruleId if missing.
+  const vUnknown = v as unknown as { help?: unknown };
+  const baseHelp = typeof vUnknown.help === "string" ? vUnknown.help : v.id;
+  const firstSelector = nodes.length > 0 ? nodes[0]?.selector ?? "" : "";
+  const message =
+    firstSelector !== ""
+      ? `${baseHelp} (${firstSelector}${nodes.length > 1 ? ` +${nodes.length - 1} more` : ""})`
+      : baseHelp;
   const out: A11yViolation = {
     ruleId: v.id,
     impact,
     level,
     severity,
     nodes,
+    message,
   };
   if (v.helpUrl !== undefined) out.helpUrl = v.helpUrl;
   return out;
 }
 
 // ---------------------------------------------------------------------------
-// runWithLivePlaywright — navigate via chromium, inject axe.source, evaluate.
-// Uses the security-owned `_sandbox.ts` when present; falls back to a safe
-// inline launch otherwise (TODO: swap to safeBrowserLaunch when _sandbox.ts
-// lands).
+// runViaPlaywright — navigate via chromium through the hardened
+// `_sandbox.ts > safeBrowserLaunch` wrapper, inject `axe.source`, evaluate
+// `axe.run(document, …)` in-page. The live browser computes real rendered
+// styles — this is what makes color-contrast on inline styles (e.g.
+// `<p style="color:#b8b8b8;background:#ffffff">`) actually fire, where jsdom
+// silently misses it.
+//
+// All hardening (URL guards, chromium flags, restricted context, route-block
+// of non-loopback hosts) lives in `_sandbox.ts`. We never call
+// `chromium.launch` directly.
 // ---------------------------------------------------------------------------
 
-async function tryLoadSandbox(): Promise<
-  | { safeBrowserLaunch: (url: string) => Promise<{ browser: unknown; page: unknown }> }
-  | null
-> {
+// Shape we read from `./_sandbox.js`. Kept narrow so a future sandbox API
+// change is loud-fail rather than silent-skip.
+interface SafeBrowserHandleLike {
+  newPage(): Promise<{
+    goto: (url: string, opts?: unknown) => Promise<unknown>;
+    addScriptTag: (opts: { content: string }) => Promise<unknown>;
+    evaluate: (fn: () => Promise<AxeResults>) => Promise<AxeResults>;
+    close: () => Promise<void>;
+  }>;
+  close: () => Promise<void>;
+}
+
+interface SandboxModule {
+  safeBrowserLaunch: (opts: {
+    livePreviewUrl: string;
+    budgetMs?: number;
+  }) => Promise<SafeBrowserHandleLike>;
+}
+
+async function loadSandbox(): Promise<SandboxModule | null> {
   try {
-    return (await import("./_sandbox.js")) as unknown as {
-      safeBrowserLaunch: (
-        url: string,
-      ) => Promise<{ browser: unknown; page: unknown }>;
-    };
+    return (await import("./_sandbox.js")) as unknown as SandboxModule;
   } catch {
     return null;
   }
@@ -150,35 +187,35 @@ async function runViaPlaywright(
   livePreviewUrl: string,
   axe: AxeModule,
 ): Promise<A11yViolation[]> {
-  const pw = await loadPlaywright();
-  if (pw === null) {
-    throw new Error("playwright not available");
-  }
-  // URL allow-list: localhost only. Defense in depth in case _sandbox is
-  // absent.
-  const u = new URL(livePreviewUrl);
-  if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
-    throw new Error(`a11y-axe refuses non-localhost URL: ${livePreviewUrl}`);
+  const sandbox = await loadSandbox();
+  if (sandbox === null) {
+    throw new Error("sandbox not available");
   }
 
-  const sandbox = await tryLoadSandbox();
-  if (sandbox !== null) {
-    // Sandbox-owned launch path.
-    const { browser, page } = await sandbox.safeBrowserLaunch(livePreviewUrl);
+  // safeBrowserLaunch validates the URL (loopback-only, http(s), explicit
+  // non-privileged port, no userinfo) and throws SandboxError on violation.
+  // We rethrow as-is so runA11yAxe's catch surfaces it as a warn skip.
+  const handle = await sandbox.safeBrowserLaunch({
+    livePreviewUrl,
+    budgetMs: A11Y_AXE_BUDGET_MS,
+  });
+
+  try {
+    const page = await handle.newPage();
     try {
-      // Inject axe source — `axe.source` is the standalone bundle as a
-      // string. We then `axe.run(document, { ... })` in-page.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const p = page as any;
-      await p.addScriptTag({ content: (axe as unknown as { source: string }).source });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const results = (await p.evaluate(async () => {
+      await page.goto(livePreviewUrl, {
+        timeout: A11Y_AXE_BUDGET_MS,
+        waitUntil: "domcontentloaded",
+      });
+      // `axe.source` is the standalone bundle as a string — inject it into
+      // the page so `window.axe` exists for the evaluate() call below.
+      await page.addScriptTag({
+        content: (axe as unknown as { source: string }).source,
+      });
+      const results = await page.evaluate(async (): Promise<AxeResults> => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const a = (globalThis as any).axe as {
-          run: (
-            ctx: unknown,
-            opts: unknown,
-          ) => Promise<AxeResults>;
+          run: (ctx: unknown, opts: unknown) => Promise<AxeResults>;
         };
         return a.run(document, {
           runOnly: {
@@ -189,49 +226,18 @@ async function runViaPlaywright(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           exclude: [["[data-wisp-ui]"]] as any,
         });
-      })) as AxeResults;
+      });
       return results.violations.map(mapAxeViolation);
     } finally {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (browser as any).close();
+        await page.close();
       } catch {
         /* ignore */
       }
     }
-  }
-
-  // Inline fallback. TODO: replace once security's `_sandbox.ts` lands.
-  const browser = await pw.chromium.launch({
-    headless: true,
-    args: ["--disable-extensions", "--no-default-browser-check", "--no-first-run"],
-  });
-  try {
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    await page.goto(livePreviewUrl, { timeout: 5_000, waitUntil: "networkidle" });
-    await page.addScriptTag({
-      content: (axe as unknown as { source: string }).source,
-    });
-    const results = (await page.evaluate(async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const a = (globalThis as any).axe as {
-        run: (
-          ctx: unknown,
-          opts: unknown,
-        ) => Promise<AxeResults>;
-      };
-      return a.run(document, {
-        runOnly: {
-          type: "tag",
-          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
-        },
-      });
-    })) as AxeResults;
-    return results.violations.map(mapAxeViolation);
   } finally {
     try {
-      await browser.close();
+      await handle.close();
     } catch {
       /* ignore */
     }
@@ -254,24 +260,54 @@ async function runViaJsdom(html: string, axe: AxeModule): Promise<A11yViolation[
     // arbitrary author JS to execute.
     runScripts: "outside-only",
     pretendToBeVisual: true,
+    // Suppress jsdom console noise (resource-load warnings etc.) so they
+    // don't leak into the wisp-design audit output.
+    virtualConsole: new jsdomMod.VirtualConsole(),
+    // Default `resources` (undefined) means jsdom does NOT fetch external
+    // resources — <link href="cdn.tailwind..."> is silently ignored. This is
+    // what we want: no network I/O, no timeout hanging on CDN fetches.
   });
 
   // axe-core needs globals to exist BEFORE its module is evaluated. We
   // already imported it (at the top of run()), so we splice the globals
   // onto `globalThis` for the duration of the run and restore after.
+  //
+  // Node 21+ made `navigator` a read-only Web-API getter on `globalThis`, so
+  // plain assignment (`globalThis.navigator = win.navigator`) throws
+  // `Cannot set property navigator of #<Object> which has only a getter`. We
+  // use `Object.defineProperty` with `configurable: true` so both the
+  // splice and the restore work on Node 22 LTS (and older).
   const win = dom.window;
-  const savedWindow = (globalThis as { window?: unknown }).window;
-  const savedDocument = (globalThis as { document?: unknown }).document;
-  const savedNavigator = (globalThis as { navigator?: unknown }).navigator;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).window = win;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).document = win.document;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).navigator = win.navigator;
+  const spliceGlobal = (key: "window" | "document" | "navigator", value: unknown): unknown => {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, key);
+    const prev = desc !== undefined && "value" in desc ? desc.value : (globalThis as Record<string, unknown>)[key];
+    Object.defineProperty(globalThis, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: true,
+    });
+    return prev;
+  };
+  const restoreGlobal = (key: "window" | "document" | "navigator", value: unknown): void => {
+    Object.defineProperty(globalThis, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: true,
+    });
+  };
+  const savedWindow = spliceGlobal("window", win);
+  const savedDocument = spliceGlobal("document", win.document);
+  const savedNavigator = spliceGlobal("navigator", win.navigator);
   try {
-    // axe-core's `run()` accepts a Document directly.
-    const results = (await axe.run(win.document, {
+    // axe-core's `run()` accepts a Document, Element, NodeList, or selector.
+    // jsdom's Document does not pass axe-core's `instanceof Document` check
+    // because axe-core captured `Document` from the host realm at import
+    // time, before we spliced jsdom's globals. Passing `documentElement`
+    // (a clearly-typed Element) bypasses the Document-check and lets axe
+    // use jsdom's tree as the root.
+    const results = (await axe.run(win.document.documentElement, {
       runOnly: {
         type: "tag",
         values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
@@ -279,14 +315,9 @@ async function runViaJsdom(html: string, axe: AxeModule): Promise<A11yViolation[
     } as Parameters<AxeModule["run"]>[1])) as unknown as AxeResults;
     return results.violations.map(mapAxeViolation);
   } finally {
-    // Restore globals so subsequent unrelated code doesn't see jsdom's
-    // window. Test runs in vitest care about this.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).window = savedWindow;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).document = savedDocument;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (globalThis as any).navigator = savedNavigator;
+    restoreGlobal("window", savedWindow);
+    restoreGlobal("document", savedDocument);
+    restoreGlobal("navigator", savedNavigator);
     try {
       dom.window.close();
     } catch {
@@ -308,9 +339,11 @@ export async function runA11yAxe(opts: {
   const startedAt = Date.now();
   const axe = await loadAxe();
   if (axe === null) {
+    // axe-core is a regular dependency (not optional); failure to import is a
+    // genuine runtime error, not a graceful skip.
     return {
       name: "a11y-axe",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: { reason: "error", detail: "axe-core import failed" },
     };
@@ -323,8 +356,12 @@ export async function runA11yAxe(opts: {
       if (pw !== null) {
         violations = await runViaPlaywright(opts.livePreviewUrl, axe);
       } else if (opts.html !== undefined) {
+        // Playwright absent but html fallback is available — use jsdom path.
         violations = await runViaJsdom(opts.html, axe);
       } else {
+        // Playwright is an optional dep; missing it without html fallback is a
+        // genuine optional-dep skip — not an error. Severity stays "pass" so
+        // the verdict isn't poisoned when the user hasn't installed playwright.
         return {
           name: "a11y-axe",
           severity: "pass",
@@ -338,23 +375,16 @@ export async function runA11yAxe(opts: {
     } else if (opts.html !== undefined) {
       violations = await runViaJsdom(opts.html, axe);
     } else {
+      // Neither html nor livePreviewUrl — caller error; surface as warn.
       return {
         name: "a11y-axe",
-        severity: "pass",
+        severity: "warn",
         durationMs: Date.now() - startedAt,
         skipped: { reason: "error", detail: "neither html nor livePreviewUrl supplied" },
       };
     }
 
-    // Honour the per-check budget — if we somehow took longer than the
-    // ceiling, flag it. (The orchestrator also wraps us in a Promise.race
-    // with a hard timeout.)
     const durationMs = Date.now() - startedAt;
-    if (durationMs > A11Y_AXE_BUDGET_MS) {
-      // We still return the result we computed; orchestrator decides whether
-      // to treat over-budget as a problem.
-    }
-
     const severity = violations.some((v) => v.severity === "fail")
       ? "fail"
       : violations.some((v) => v.severity === "warn")
@@ -368,9 +398,12 @@ export async function runA11yAxe(opts: {
       violations,
     };
   } catch (err) {
+    // Runtime error (jsdom parse failure, axe threw, chromium binary missing
+    // after playwright loaded, etc.) → warn. The user should know the check
+    // didn't run, but a runtime error shouldn't hard-block the accept.
     return {
       name: "a11y-axe",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",

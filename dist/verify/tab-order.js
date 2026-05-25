@@ -70,6 +70,9 @@ var INTERACTIVE_SELECTORS = [
   "[tabindex]",
   '[contenteditable="true"]'
 ];
+function mkTabViolation(kind, selector, message) {
+  return { kind, selector, detail: message, message };
+}
 function detectNonzeroTabindex(doc) {
   const out = [];
   const elements = doc.querySelectorAll("[tabindex]");
@@ -78,11 +81,14 @@ function detectNonzeroTabindex(doc) {
     if (raw === null) return;
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return;
-    out.push({
-      kind: "nonzero-tabindex",
-      selector: cssPathFor(el),
-      detail: `tabindex=${raw} on <${el.tagName.toLowerCase()}>`
-    });
+    const sel = cssPathFor(el);
+    out.push(
+      mkTabViolation(
+        "nonzero-tabindex",
+        sel,
+        `${sel} has tabindex=${raw} (positive) \u2014 disrupts natural tab order; use tabindex="0" or remove`
+      )
+    );
   });
   return out;
 }
@@ -98,11 +104,14 @@ function detectMissingFocusRing(doc) {
   const elements = doc.querySelectorAll(INTERACTIVE_SELECTORS.join(","));
   elements.forEach((el) => {
     if (hasFocusVisibleRule) return;
-    out.push({
-      kind: "missing-focus-ring",
-      selector: cssPathFor(el),
-      detail: "no :focus or :focus-visible rule found in the page stylesheets"
-    });
+    const sel = cssPathFor(el);
+    out.push(
+      mkTabViolation(
+        "missing-focus-ring",
+        sel,
+        `${sel} has no :focus or :focus-visible rule \u2014 keyboard users will see no focus indicator`
+      )
+    );
   });
   return out.slice(0, 10);
 }
@@ -133,11 +142,15 @@ function detectFocusTrapLeak(doc) {
       if (!hidden) leaks.push(el);
     });
     if (leaks.length > 0) {
-      out.push({
-        kind: "focus-trap-leak",
-        selector: cssPathFor(dialog),
-        detail: `${leaks.length} focusable element${leaks.length > 1 ? "s" : ""} reachable outside the open modal`
-      });
+      const sel = cssPathFor(dialog);
+      const n = leaks.length;
+      out.push(
+        mkTabViolation(
+          "focus-trap-leak",
+          sel,
+          `${sel} is an open modal but ${n} focusable element${n > 1 ? "s are" : " is"} reachable outside \u2014 tab focus escapes the trap`
+        )
+      );
     }
   }
   return out;
@@ -158,7 +171,7 @@ async function runTabOrder(opts) {
   if (jsdomMod === null) {
     return {
       name: "tab-order",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -192,7 +205,7 @@ async function runTabOrder(opts) {
   } catch (err) {
     return {
       name: "tab-order",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",

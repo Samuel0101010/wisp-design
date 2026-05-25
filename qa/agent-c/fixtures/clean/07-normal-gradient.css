@@ -1,0 +1,18 @@
+/* Clean: gradient background that is NOT purple-to-blue */
+.hero-green {
+  background: linear-gradient(135deg, #059669 0%, #0d9488 100%);
+  min-height: 400px;
+}
+
+.warm-banner {
+  background: linear-gradient(to right, #f59e0b, #ef4444);
+  padding: 32px;
+}
+
+.blue-mono {
+  background: linear-gradient(180deg, #1e40af 0%, #3b82f6 100%);
+}
+
+.neutral-fade {
+  background: linear-gradient(to bottom, #f8fafc, #f1f5f9);
+}

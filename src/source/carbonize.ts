@@ -36,12 +36,35 @@ export function carbonize(css: string, opts: CarbonizeOptions): string {
   const scopeVars = collectScopeVars(root.rule);
   const merged: Record<string, string> = { ...scopeVars, ...opts.paramOverrides };
 
-  // Emit rules from root body, skipping the `:scope` declarations block.
+  // Emit rules from root body. The `:scope` block has dual purpose:
+  // (a) CSS variable bindings (`:scope { --x: 16px }`) → consumed into
+  //     the var map and substituted into descendant declarations.
+  // (b) Real style declarations (`:scope { padding: 2em }`) → emitted
+  //     against the scope-selector so they actually apply to the picked
+  //     element. Without this, a variant like `:scope { padding: 2em }`
+  //     would carbonize to an EMPTY style block — bug found Phase 7.7.
   const lines: string[] = [];
   for (const child of root.rule.children) {
     if (child.kind === "rule") {
       if (child.selector === ":scope") {
-        // Consumed declarations — skip.
+        // Emit non-var declarations against the scope selector.
+        const nonVarDecls: string[] = [];
+        for (const decl of child.children) {
+          if (decl.kind !== "decl") continue;
+          const clean = decl.text.replace(/;\s*$/, "").trim();
+          if (clean === "") continue;
+          const idx = clean.indexOf(":");
+          if (idx === -1) continue;
+          const prop = clean.slice(0, idx).trim();
+          if (prop.startsWith("--")) continue; // already in merged map
+          const baked = bakeDeclaration(decl.text, merged);
+          if (baked !== null) nonVarDecls.push(`  ${baked};`);
+        }
+        if (nonVarDecls.length > 0) {
+          lines.push(`${opts.scopeSelector} {`);
+          for (const d of nonVarDecls) lines.push(d);
+          lines.push(`}`);
+        }
         continue;
       }
       emitRule(child, opts.scopeSelector, merged, lines, 0);
@@ -345,9 +368,36 @@ function rewriteSelector(selector: string, scopeSelector: string): string {
 function rewriteSingleSelector(sel: string, scopeSelector: string): string {
   if (sel === "") return "";
   if (sel === ":scope") return scopeSelector;
+  // Phase 7.11 — strip redundant picked-tag prefix.
+  // Variants are authored against the live preview where `:scope` is the
+  // variant-wrapper div and `:scope > <picked-tag>` is the picked element.
+  // After carbonize, `:scope` becomes the picked-element selector, so a
+  // naive rewrite of `:scope > article` produces `article.x > article` —
+  // looking for a non-existent nested article. Detect when the first
+  // descendant token matches the picked element's tag and strip it.
+  const pickedTag = extractTagFromScopeSelector(scopeSelector);
+  if (pickedTag !== null) {
+    const re = new RegExp(`^:scope\\s*>\\s*${pickedTag}(?![\\w-])`, "i");
+    const m = sel.match(re);
+    if (m !== null) {
+      return `${scopeSelector}${sel.slice(m[0].length)}`;
+    }
+  }
   // `:scope .child` → `<scope> .child`; `:scope.foo` → `<scope>.foo` (glued).
   if (sel.startsWith(":scope")) return `${scopeSelector}${sel.slice(":scope".length)}`;
   return `${scopeSelector} ${sel}`;
+}
+
+function extractTagFromScopeSelector(scopeSelector: string): string | null {
+  // Parse the leading tag of the first compound selector. Handles:
+  //   "article.bg-white.border" → "article"
+  //   "div#main"                → "div"
+  //   "button[type='submit']"   → "button"
+  //   ".class-only"             → null (no tag)
+  //   "h3 > span"               → "h3"
+  const trimmed = scopeSelector.trim();
+  const m = trimmed.match(/^([a-zA-Z][a-zA-Z0-9-]*)/);
+  return m !== null ? (m[1] as string).toLowerCase() : null;
 }
 
 function emitRule(

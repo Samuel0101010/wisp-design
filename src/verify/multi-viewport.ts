@@ -173,9 +173,10 @@ export async function runMultiViewport(opts: {
   try {
     await fs.mkdir(dest, { recursive: true });
   } catch (err) {
+    // mkdir failure is a runtime error — not an optional-dep skip.
     return {
       name: "multi-viewport",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -248,9 +249,12 @@ export async function runMultiViewport(opts: {
       violations: [],
     };
   } catch (err) {
+    // Playwright launch failure (chromium binary missing after the package-
+    // level check passed, network error during page.goto, etc.) is a runtime
+    // error — surface as warn so the user sees the failure.
     return {
       name: "multi-viewport",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",

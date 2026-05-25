@@ -1,0 +1,26 @@
+/* Clean: sidebar layout with solid border, no gradient stripe */
+.sidebar {
+  width: 240px;
+  border-right: 1px solid #e2e8f0;
+  padding: 20px 12px;
+  height: 100vh;
+  overflow-y: auto;
+  background-color: #f8fafc;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #475569;
+  text-decoration: none;
+}
+
+.sidebar-item.active {
+  background-color: #e2e8f0;
+  color: #0f172a;
+  font-weight: 600;
+}

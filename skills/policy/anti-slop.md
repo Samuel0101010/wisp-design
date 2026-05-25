@@ -122,6 +122,29 @@ Detection: hex literal in `:scope` block when a token would have sufficed.
 
 Detection: any length unit not in the project's sampled spacing set.
 
+## Linter Coverage
+
+Of the 12 hard-bans above, the Phase-5 verification-gate linter (`src/verify/anti-slop-linter.ts`, `HARD_BAN_RULES` set) currently enforces **rules 1-7**:
+
+| # | Rule                          | Linter-enforced? | Notes                                                                                                          |
+| - | ----------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| 1 | em-dash-ui                    | ✅ yes           | CSS `content:` strings + JSX text inside button/h1-6/label/a/p/span                                            |
+| 2 | gradient-text-headline        | ✅ yes           | `background-clip: text` paired with `color: transparent` near headline/link selectors; Tailwind-class variant too |
+| 3 | default-glassmorphism         | ✅ yes           | `backdrop-filter: blur(...)` without a nearby `/* wisp-justify: … */` rationale comment                        |
+| 4 | hero-metric-template          | ✅ yes           | `font-size ≥ 80px` near a `100k+`/`10x`/`$M+`-style `content:` string; Tailwind text-7xl/8xl/9xl variant       |
+| 5 | side-stripe-decoration        | ✅ yes           | `::before` pseudo with `position: absolute; left: 0; width: 1-8px; background: linear-gradient`               |
+| 6 | purple-blue-gradient          | ✅ yes           | `linear-gradient` containing both a purple-ish hex/name and a blue-ish hex/name; Tailwind-class variant too    |
+| 7 | generic-ai-illustration       | ✅ yes           | `background-image: url(...)` referencing undraw/drawkit/3D-blob/cartoon                                        |
+| 8 | bento-grid-abuse              | ❌ policy-only   | Requires DOM-structure analysis of child-component homogeneity — not regex-tractable. Prompt-time only.        |
+| 9 | bounce-elastic-easing         | ❌ policy-only   | Phase-5 deferred — needs cubic-bezier control-point parser. Tracked for Phase 6+ alongside `reduced-motion`.   |
+| 10 | `#000`/`#fff` literals       | ❌ policy-only   | Trivial to add as regex; deferred to keep the v0.6 hard-ban surface at 7. Tracked for Phase 7 linter expansion.|
+| 11 | hard-coded hex in component   | ❌ policy-only   | Requires `brandSpec.palette` cross-reference; awaits design-token integration. Prompt-time only for now.       |
+| 12 | arbitrary spacing values      | ❌ policy-only   | Requires `designTokens.spacing` cross-reference; awaits design-token integration. Prompt-time only for now.    |
+
+In short: **rules 8-12 are policy-only**, advisory at prompt time, not currently auto-enforced by the linter. They will be added in Phase 7 launch prep alongside the 4 regex tightenings already queued (see `src/verify/anti-slop-linter.ts` header audit).
+
+Soft-warnings S1-S5 below are partially linter-enforced (S2 round-number-whitespace with file-level aggregation, S3 default-tailwind-blue limited to `color:`, S4 single-weight-typography stateful, S5 all-rounded-corners as 4-consecutive heuristic; S1 too-perfect-alignment is the only fully-linter-enforced soft).
+
 ## Soft-warnings (gate warns; do not block)
 
 These shouldn't be reached for thoughtlessly. The model should self-correct at prompt time. The gate logs them; the user sees a non-blocking warning.

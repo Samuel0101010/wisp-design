@@ -386,7 +386,7 @@ async function runMultiViewport(opts) {
   } catch (err) {
     return {
       name: "multi-viewport",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -450,7 +450,7 @@ async function runMultiViewport(opts) {
   } catch (err) {
     return {
       name: "multi-viewport",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",

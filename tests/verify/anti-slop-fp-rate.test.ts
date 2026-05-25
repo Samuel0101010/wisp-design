@@ -284,26 +284,23 @@ describe("anti-slop FPR canary (100-component corpus)", () => {
     expect(r.hardBanFprAcrossAll).toBeLessThan(ANTI_SLOP_FALSE_POSITIVE_RATE_MAX);
   });
 
-  // Phase 6 calibration: round-number-whitespace was migrated to a file-level
-  // aggregator (totalCount >= 4 AND ratio > 0.7 → 1 hit per file), which
-  // eliminated its contribution to the soft-warn FPR. However, the canary
-  // measured 42.86% post-fix — TWO other soft rules still over-fire on the
-  // fixtures:
-  //   1. `single-weight-typography` — fires on realGood fixtures that happen
-  //      to declare exactly one font-weight per snippet (10/30 hits).
-  //   2. `default-tailwind-blue` — fires on every borderline fixture using
-  //      `color: #3b82f6` (20/20 hits).
-  // These rules need the audit-recommended tightenings (font-weight scoping to
-  // text-bearing CSS; default-tailwind-blue extension to bg/border/fill/stroke
-  // with whitelist or aggregation). Until those land, the soft-warn FPR sits
-  // at 42.86%. We assert a calibrated upper bound that DOES pass today —
-  // tightening to <20% is tracked as a follow-up and the comment above is the
-  // source of truth for what's left.
-  it("soft-warn FPR across non-slop fixtures is calibrated (<45%; <20% is the goal once font-weight + default-blue tightenings land)", async () => {
+  // G1/G2 calibration (2026-05-24) — Squad G brought soft-warn FPR from
+  // 42.86% → 0% on this 100-component corpus by adding minimum-occurrence
+  // gates to the two top FP contributors:
+  //   1. `single-weight-typography` — now requires ≥2 font-weight declarations
+  //      in text-bearing blocks sharing one value (was: 1+ was enough). A
+  //      single styled label-class with one weight is treated as an
+  //      intentional single-element style.
+  //   2. `default-tailwind-blue` — now requires ≥2 total occurrences (CSS
+  //      properties + className utilities, deduped by line:column) across
+  //      the file before emitting. A single `color: #3b82f6` or `bg-blue-500`
+  //      is treated as an intentional accent.
+  // Both gates preserve hard-ban FPR (0%) and FN rate (0/30 missed).
+  it("soft-warn FPR across non-slop fixtures is below the 20% goal (G1/G2 calibrated)", async () => {
     const r = await computeFprReport();
-    // Current measured: ~42.86%. Pin a slightly looser ceiling so transient
-    // CI fluctuations don't flake; tighten when the two outstanding rules
-    // are aggregated.
-    expect(r.softWarnFprAcrossNonSlop).toBeLessThan(0.45);
+    // Measured post-G1/G2: 0.00%. Pin <20% as the CLAUDE.md target gate.
+    // Adjust upward only after deliberate test-corpus expansion that
+    // introduces NEW realistic FP risk.
+    expect(r.softWarnFprAcrossNonSlop).toBeLessThan(0.2);
   });
 });

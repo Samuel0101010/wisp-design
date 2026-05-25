@@ -128,7 +128,7 @@ var COMPONENT_SIGNAL_WEIGHTS = {
   "className-pattern": 0.2
 };
 var COMPONENT_DETECT_QUICK_SAMPLE_SIZE = 10;
-var COMPONENT_DETECT_CONFIDENCE_THRESHOLD = 0.6;
+var COMPONENT_DETECT_CONFIDENCE_THRESHOLD = 0.45;
 var COMPONENT_DETECT_PER_FILE_WEIGHT_CAP = 1;
 
 // src/agent/component-detect.ts
@@ -393,17 +393,12 @@ async function detect(opts) {
     const sourceSum = sumPerLib.get(lib) ?? 0;
     const sourceCount = fileCountPerLib.get(lib) ?? 0;
     const pkgScore = pkgPerLib.get(lib) ?? 0;
-    let total = sourceSum;
-    let denom = sourceCount;
-    if (pkgScore > 0) {
-      total += pkgScore;
-      denom += 1;
-    }
-    if (denom === 0) {
+    if (sourceCount === 0 && pkgScore === 0) {
       finalConfidence.set(lib, 0);
       continue;
     }
-    finalConfidence.set(lib, clamp01(total / denom));
+    const sourceAvg = sourceCount > 0 ? sourceSum / sourceCount : 0;
+    finalConfidence.set(lib, clamp01(sourceAvg + pkgScore));
   }
   let primaryLib = "vanilla";
   let maxScore = 0;

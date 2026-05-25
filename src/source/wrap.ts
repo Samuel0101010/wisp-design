@@ -61,8 +61,16 @@ export interface WrapModuleOptions {
 export type WrapOk = WrapResult & { ok: true };
 export type WrapFail = {
   ok: false;
-  reason: "ambiguous_target" | "target_not_found" | "safety_refused";
+  reason:
+    | "ambiguous_target"
+    | "target_not_found"
+    | "safety_refused"
+    | "dynamic_classname";
+  /** Stable error code for programmatic dispatch. */
+  code?: "DYNAMIC_CLASSNAME";
   suggestedFallback?: "agent-driven" | "manual" | "skip";
+  /** Human-readable message — populated for dynamic_classname. */
+  message?: string;
   detail?: Record<string, unknown>;
 };
 
@@ -124,6 +132,17 @@ export async function wrapVariantBlock(
       detail: { selector: target.selector, matchCount: span.matchCount },
     };
   }
+  if (span.kind === "dynamic_classname") {
+    const line = span.line + 1; // human-1-indexed
+    return {
+      ok: false,
+      reason: "dynamic_classname",
+      code: "DYNAMIC_CLASSNAME",
+      suggestedFallback: "agent-driven",
+      message: `className={...} JSX expression at line ${line} — wisp cannot statically locate; use agent-driven mode`,
+      detail: { selector: target.selector, line },
+    };
+  }
 
   const { startOffset, endOffset, startLine, endLine } = span;
   const originalSnippet = canonical.slice(startOffset, endOffset);
@@ -165,6 +184,19 @@ export async function wrapVariantBlock(
   const hostInner = renderVariantZeroWrap(fileType, originalSnippet);
   const hostClose = renderHostClose(fileType);
 
+  // Replacement ends with `\n` because `locateTargetSpan`'s endOffset
+  // consumes the trailing newline of the wrapped element's line. Without
+  // this trailing newline, the variants-end marker would glue onto the
+  // next sibling's line — and a subsequent `acceptVariant` line-replace
+  // would consume the next sibling too. Bug found Phase 7.1.
+  //
+  // Byte-equivalence contract (Phase 7.13): the wrap's appended `\n` lives
+  // ENTIRELY inside the marker block — `findMarkerBlock` returns
+  // `endOffset = startOfNextLineAfterEndMarker`, which includes that `\n`.
+  // So on discard, splicing in `originalSnippet` (the bytes between
+  // pre-wrap startOffset/endOffset) reproduces the pre-wrap file byte-for-
+  // byte. Documented here so future refactors don't accidentally drop the
+  // `+ "\n"` and break round-trip equivalence.
   const replacement = [
     syntax.open(variantsStartBody),
     syntax.open(styleStartBody),
@@ -174,7 +206,8 @@ export async function wrapVariantBlock(
     hostInner,
     hostClose,
     syntax.close(variantsEndBody),
-  ].join("\n");
+  ].join("\n") + "\n";
+  const appendedTrailingNewline = true;
 
   // Splice + line tracking.
   const next =
@@ -197,6 +230,8 @@ export async function wrapVariantBlock(
         originalByteSize: originalSnippet.length,
         startLine,
         endLine,
+        appendedTrailingNewline,
+        originalEndsWithNewline: originalSnippet.endsWith("\n"),
       },
     },
     { projectRoot: modOpts.projectRoot },
@@ -217,6 +252,49 @@ export async function wrapVariantBlock(
     variantsEndLine: startLine + replacementLineCount,
     originalBase64,
   };
+}
+
+// ---------------------------------------------------------------------------
+// cleanupStaleWraps — discard ALL wisp-variants blocks in a file. Used on
+// bridge startup to recover from crashed/abandoned previous sessions whose
+// markers never went through accept/discard. Each block's originalLines
+// payload is replayed back into the file. Returns the number of blocks
+// cleaned. No-op if the file has no markers. Bug found Phase 7.6.
+// ---------------------------------------------------------------------------
+
+export async function cleanupStaleWraps(
+  filePath: string,
+  modOpts: WrapModuleOptions,
+): Promise<number> {
+  const safety: SafetyResult = await safetyCheck(filePath, modOpts.projectRoot);
+  if (!safety.ok) return 0;
+  const { fileType } = safety;
+  let cleaned = 0;
+  // Loop: find the first wrap-variants block (any session/target), discard
+  // it, repeat. Caps at 20 iterations as a safety net against runaway loops.
+  for (let i = 0; i < 20; i += 1) {
+    const original = await fs.readFile(filePath, { encoding: "utf8" });
+    const canonical = canonicalize(original);
+    const block = findMarkerBlock(canonical, fileType, "variants");
+    if (block === null) break;
+    const sessionId =
+      typeof block.payload.sessionId === "string"
+        ? block.payload.sessionId
+        : "";
+    const targetId =
+      typeof block.payload.targetId === "string"
+        ? block.payload.targetId
+        : "";
+    if (sessionId === "" || targetId === "") break;
+    try {
+      await discardVariantBlock(filePath, sessionId, targetId, modOpts);
+      cleaned += 1;
+    } catch {
+      // If discard throws (e.g. malformed marker), stop to avoid loop.
+      break;
+    }
+  }
+  return cleaned;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,21 +334,36 @@ export async function discardVariantBlock(
   // → best-effort replace with empty string; caller sees byteEquivalent=false.
   const b64 = block.payload.originalLines ?? "";
   let restoredSnippet = "";
+  let decodeOk = false;
   try {
     restoredSnippet = Buffer.from(b64, "base64").toString("utf8");
+    decodeOk = b64 !== "";
   } catch {
     restoredSnippet = "";
+    decodeOk = false;
   }
 
+  // Phase 7.13 — trailing-`\n` reconciliation. wrap.ts appends a single
+  // `\n` at the END of the marker block (to keep the variants-end marker
+  // on its own line). `findMarkerBlock`'s block.endOffset is the start of
+  // the line AFTER the end-marker, so that wrap-added `\n` lives INSIDE
+  // [block.startOffset .. block.endOffset] and is consumed by the splice.
+  // No snippet trimming is needed because the appended-`\n` is in the
+  // block range, not in `originalSnippet`. Verified end-to-end against
+  // JSX mid-file, HTML mid-file, EOF, and no-trailing-newline fixtures.
   const next = expandReplaceRange(canonical, block, restoredSnippet, eol);
   const final = applyEol(next, eol);
   await atomicWrite(filePath, final);
   const afterHash = sha256Hex(final);
 
-  // Byte-equivalent restore = we had a non-empty originalLines payload to
-  // splice in. Tester verifies via fixture: wrap(X) then discard() yields
-  // bytes identical to X.
-  const byteEquivalent = restoredSnippet !== "";
+  // Byte-equivalent restore semantics (Phase 7.13): honest reflection of
+  // whether the pre-wrap file state was reproduced. True iff:
+  //   (a) originalLines payload was present + decodable, AND
+  //   (b) the splice itself succeeded (no error path reached here).
+  // Per the byte-equivalence contract documented in wrap.ts (wrap's
+  // appended `\n` lives inside the marker block range), (a)+(b) together
+  // imply true byte-for-byte equivalence with the pre-wrap content.
+  const byteEquivalent = decodeOk && restoredSnippet !== "";
 
   await appendUndo(
     {
@@ -283,6 +376,7 @@ export async function discardVariantBlock(
       detail: {
         targetId,
         restoredByteEquivalent: byteEquivalent,
+        snippetEndsWithNewline: restoredSnippet.endsWith("\n"),
       },
     },
     { projectRoot: modOpts.projectRoot },
@@ -303,17 +397,224 @@ export async function discardVariantBlock(
 type SpanResult =
   | { kind: "found"; startOffset: number; endOffset: number; startLine: number; endLine: number }
   | { kind: "not_found" }
-  | { kind: "ambiguous"; matchCount: number };
+  | { kind: "ambiguous"; matchCount: number }
+  | { kind: "dynamic_classname"; line: number };
+
+// Discriminated result for the class-attribute extractor. The JSX-expression
+// case (`className={cn(...)}`) cannot be statically resolved, so we surface it
+// explicitly instead of treating it as "no class attribute present" — which
+// would silently fall through to target_not_found and waste a recovery cycle.
+type ClassAttrResult =
+  | { kind: "static"; classes: Set<string> }
+  | { kind: "dynamic-jsx-expression" }
+  | { kind: "none" };
 
 function locateTargetSpan(
   canonical: string,
   fileType: SourceFileType,
   selector: string,
 ): SpanResult {
-  // Derive an "anchor" substring from the selector.
-  const anchor = selectorToAnchor(selector);
-  if (anchor === null) return { kind: "not_found" };
+  // Parse the selector's leaf segment for tag + required class list.
+  const parsed = parseLeafSelector(selector);
 
+  // Strategy:
+  //   1. Find all `<tag` occurrences (or `<` for any-tag selectors).
+  //   2. For each, slice forward to its `>` and extract the class attribute.
+  //   3. Filter to candidates whose class list is a SUPERSET of the required
+  //      classes from the selector. This handles Tailwind's space-delimited
+  //      multi-class lists (e.g. `class="mt-6 w-full bg-neutral-900 …"`).
+  //   4. If exactly 1 candidate → found. Else → ambiguous / not_found.
+  //   5. Fallback (no tag, no classes): legacy substring anchor.
+  if (parsed === null) {
+    return locateBySubstring(canonical, fileType, selectorToAnchor(selector));
+  }
+  const { tag, classes, idAttr } = parsed;
+  // Id is the strongest anchor — exact `id="x"` substring should be unique.
+  if (idAttr !== null) {
+    return locateBySubstring(canonical, fileType, `id="${idAttr}"`);
+  }
+  // Find candidate opening-tag positions.
+  //   - When `tag !== null`: search for `<tag` literal, verify the next char
+  //     is whitespace/`>`/`/` so `<h3` doesn't match `<h3o`.
+  //   - When `tag === null` (class-only selector like `.btn`): search every
+  //     `<` and require the NEXT char to be `[A-Za-z]` (opening tag) — skips
+  //     `</foo>` closing tags and `<!--` comments.
+  const tagPositions: number[] = [];
+  if (tag !== null) {
+    const tagAnchor = `<${tag}`;
+    let from = 0;
+    while (from < canonical.length) {
+      const idx = canonical.indexOf(tagAnchor, from);
+      if (idx === -1) break;
+      const nextChar = canonical[idx + tagAnchor.length];
+      if (nextChar !== undefined && /[\s/>]/.test(nextChar)) {
+        tagPositions.push(idx);
+      }
+      from = idx + tagAnchor.length;
+      if (tagPositions.length > 200) break;
+    }
+  } else {
+    // Class-only selector — scan every `<X` where X is a letter.
+    for (let i = 0; i < canonical.length - 1; i += 1) {
+      if (canonical[i] === "<") {
+        const c = canonical[i + 1];
+        if (c !== undefined && /[A-Za-z]/.test(c)) {
+          tagPositions.push(i);
+          if (tagPositions.length > 1000) break;
+        }
+      }
+    }
+  }
+  if (tagPositions.length === 0) return { kind: "not_found" };
+  // For each tag candidate, parse its class attribute and check classes ⊆.
+  // Track whether we hit a JSX-expression className for the FIRST tag-name
+  // match — if the user's selector targets a tag whose only candidates all
+  // have dynamic classNames, we surface that as a structured error instead
+  // of an unhelpful "target_not_found".
+  const matchingPositions: number[] = [];
+  let firstDynamicTagPos: number | null = null;
+  for (const tagPos of tagPositions) {
+    const result = extractClassAttribute(canonical, tagPos);
+    if (result.kind === "dynamic-jsx-expression") {
+      if (firstDynamicTagPos === null) firstDynamicTagPos = tagPos;
+      continue;
+    }
+    if (result.kind === "none") {
+      // No class attribute. Class-bearing selector cannot match an
+      // unclassed element — skip silently.
+      if (classes.length === 0) {
+        matchingPositions.push(tagPos);
+        if (matchingPositions.length > 8) break;
+      }
+      continue;
+    }
+    if (classes.every((c) => result.classes.has(c))) {
+      matchingPositions.push(tagPos);
+      if (matchingPositions.length > 8) break;
+    }
+  }
+  if (matchingPositions.length === 0) {
+    // No static matches but we did see a dynamic className on a candidate
+    // element. Surface as dynamic_classname so the agent can fall back to
+    // agent-driven mode rather than re-querying with a different selector.
+    if (firstDynamicTagPos !== null) {
+      return {
+        kind: "dynamic_classname",
+        line: lineOfOffset(canonical, firstDynamicTagPos),
+      };
+    }
+    return { kind: "not_found" };
+  }
+  if (matchingPositions.length > 1) {
+    return { kind: "ambiguous", matchCount: matchingPositions.length };
+  }
+
+  const openLt = matchingPositions[0] as number;
+  return finalizeSpan(canonical, fileType, openLt);
+}
+
+// ---------------------------------------------------------------------------
+// Selector parsing — extract leaf-segment tag + class-list from a selector
+// like `section.foo > div.bar > h3.bg-clip-text.font-black`.
+// ---------------------------------------------------------------------------
+
+interface LeafSelector {
+  tag: string | null; // null = match any tag
+  classes: string[];
+  idAttr: string | null;
+}
+
+function parseLeafSelector(selector: string): LeafSelector | null {
+  const t = selector.trim();
+  if (t === "") return null;
+  // Take the leaf (rightmost segment of a `>` chain).
+  const segments = t.split(">").map((s) => s.trim()).filter((s) => s !== "");
+  const leaf = segments[segments.length - 1] ?? t;
+  // Strip pseudos like :nth-of-type(2), :hover, etc. — they're DOM-only.
+  const cleaned = leaf.replace(/:[a-z-]+(?:\([^)]*\))?/g, "");
+  if (cleaned === "") return null;
+  // Attribute selector — defer to legacy locateBySubstring path so the
+  // existing `attr="value"` anchor logic in selectorToAnchor handles it.
+  if (cleaned.startsWith("[")) return null;
+  // Extract id (#foo) — id is the strongest anchor.
+  const idMatch = /#([A-Za-z][\w-]*)/.exec(cleaned);
+  const idAttr = idMatch ? (idMatch[1] ?? null) : null;
+  // Strip id portion.
+  const withoutId = cleaned.replace(/#[A-Za-z][\w-]*/, "");
+  // Split tag vs classes on first dot.
+  const dotIdx = withoutId.indexOf(".");
+  const tagPart = dotIdx === -1 ? withoutId : withoutId.slice(0, dotIdx);
+  const classPart = dotIdx === -1 ? "" : withoutId.slice(dotIdx + 1);
+  const tag = tagPart.length > 0 ? tagPart : null;
+  const classes = classPart === ""
+    ? []
+    : classPart.split(".").map((c) => c.trim()).filter((c) => c !== "");
+  if (tag === null && classes.length === 0 && idAttr === null) return null;
+  return { tag, classes, idAttr };
+}
+
+// Read the `class="..."` (or `className="..."`) attribute of the element
+// whose opening `<` is at `openLt`.
+//
+// Returns a discriminated result:
+//   - `{kind:"static", classes}` — quoted string value, classes parsed
+//   - `{kind:"dynamic-jsx-expression"}` — JSX `className={…}` form; cannot
+//     statically resolve the class list (e.g. `className={cn("btn", …)}`)
+//   - `{kind:"none"}` — no class/className attribute on this tag
+function extractClassAttribute(
+  canonical: string,
+  openLt: number,
+): ClassAttrResult {
+  // Scan forward to the matching `>` (respecting quoted attribute values AND
+  // JSX brace-expression depth so `>` inside `{x > 0}` isn't mistaken for
+  // tag-end).
+  let i = openLt + 1;
+  let inQuote: '"' | "'" | null = null;
+  let braceDepth = 0;
+  while (i < canonical.length) {
+    const ch = canonical[i] as string;
+    if (inQuote !== null) {
+      if (ch === inQuote) inQuote = null;
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch as '"' | "'";
+    } else if (ch === "{") {
+      braceDepth += 1;
+    } else if (ch === "}") {
+      if (braceDepth > 0) braceDepth -= 1;
+    } else if (ch === ">" && braceDepth === 0) {
+      break;
+    }
+    i += 1;
+  }
+  const tagText = canonical.slice(openLt, i);
+  // Detect JSX-expression form FIRST — `className={…}` (or `class={…}`).
+  // If the value side after `=` opens with `{` it's a JSX expression and we
+  // can't resolve it statically. This must run before the quoted-string match
+  // because we want to distinguish "no attribute" from "dynamic attribute".
+  const dynamicMatch = /\b(?:class|className)\s*=\s*\{/.exec(tagText);
+  if (dynamicMatch) {
+    return { kind: "dynamic-jsx-expression" };
+  }
+  // Match class="..." OR className="..." (JSX). Handles either single or
+  // double quotes.
+  const m = /\b(?:class|className)\s*=\s*("([^"]*)"|'([^']*)')/.exec(tagText);
+  if (!m) return { kind: "none" };
+  const value = m[2] ?? m[3] ?? "";
+  return {
+    kind: "static",
+    classes: new Set(value.split(/\s+/).filter((c) => c !== "")),
+  };
+}
+
+// Legacy substring-anchor path — kept for callers that pass an explicit
+// `<tag` or `id="..."` anchor; used as the fallback when parseLeafSelector
+// returns null.
+function locateBySubstring(
+  canonical: string,
+  fileType: SourceFileType,
+  anchor: string | null,
+): SpanResult {
+  if (anchor === null) return { kind: "not_found" };
   const positions: number[] = [];
   let from = 0;
   while (from < canonical.length) {
@@ -321,19 +622,26 @@ function locateTargetSpan(
     if (idx === -1) break;
     positions.push(idx);
     from = idx + anchor.length;
-    if (positions.length > 8) break; // cap; ambiguous beyond a few hits anyway
+    if (positions.length > 8) break;
   }
   if (positions.length === 0) return { kind: "not_found" };
   if (positions.length > 1) {
     return { kind: "ambiguous", matchCount: positions.length };
   }
-
   const pos = positions[0] as number;
-
-  // Walk backwards to the opening `<` of the tag that contains this anchor.
   const openLt = canonical.lastIndexOf("<", pos);
   if (openLt === -1) return { kind: "not_found" };
+  return finalizeSpan(canonical, fileType, openLt);
+}
 
+// Shared finalization step — walks forward to element end, normalizes line
+// boundaries. Used by both the new class-set path and the legacy substring
+// path.
+function finalizeSpan(
+  canonical: string,
+  fileType: SourceFileType,
+  openLt: number,
+): SpanResult {
   // Walk forwards: balance tags. Element can be self-closing (`/>`) or paired
   // (`<Tag …> … </Tag>`). For JSX & HTML the principle is the same.
   const endOffset = walkElementEnd(canonical, fileType, openLt);
@@ -356,12 +664,50 @@ function locateTargetSpan(
 function selectorToAnchor(selector: string): string | null {
   const t = selector.trim();
   if (t === "") return null;
-  // `#id` → `id="…"`; `.cls` → `"cls"` (catches single + multi-class
-  // declarations); `[attr="v"]` → `attr="v"`; tag-name → `<tag` literal.
-  if (t.startsWith("#")) return t.length > 1 ? `id="${t.slice(1)}"` : null;
-  if (t.startsWith(".")) return t.length > 1 ? `"${t.slice(1)}"` : null;
-  if (t.startsWith("[")) return t.replace(/^\[/, "").replace(/\]$/, "");
-  return `<${t}`;
+  // For chain selectors `parent > child.x.y > leaf.a.b`, the LEAF is the
+  // target — take the rightmost segment.
+  const segments = t.split(">").map((s) => s.trim()).filter((s) => s !== "");
+  const leaf = segments[segments.length - 1] ?? t;
+
+  // Strip nth-of-type and other pseudo selectors that aren't in the source
+  // (they're DOM-only concepts).
+  const cleaned = leaf.replace(/:[a-z-]+(?:\([^)]*\))?/g, "");
+
+  // `#id` → `id="…"` literal.
+  if (cleaned.startsWith("#")) {
+    return cleaned.length > 1 ? `id="${cleaned.slice(1).split(/[.[]/)[0]}"` : null;
+  }
+  // `[attr="v"]` → `attr="v"` literal.
+  if (cleaned.startsWith("[")) return cleaned.replace(/^\[/, "").replace(/\]$/, "");
+
+  // Compound `tag.class1.class2…` or `.class1.class2`:
+  // Anchor on the MOST DISTINCTIVE class name (one with a dash, which
+  // tends to be content-bearing — e.g. `bg-clip-text` over `mt-2`). Walker
+  // then back-tracks to the enclosing `<tag` via lastIndexOf("<", anchorPos).
+  // `tag` part of `tag.class` (no classes) → `<tag` literal.
+  const dotIdx = cleaned.indexOf(".");
+  const tag = dotIdx === -1 ? cleaned : cleaned.slice(0, dotIdx);
+  const classList = dotIdx === -1
+    ? []
+    : cleaned
+        .slice(dotIdx + 1)
+        .split(".")
+        .map((c) => c.trim())
+        .filter((c) => c !== "");
+
+  if (classList.length === 0) {
+    return tag.length > 0 ? `<${tag}` : null;
+  }
+
+  // Pick the longest class name (most distinctive — least likely to collide
+  // with other elements in the file). Tailwind shorthand classes like
+  // `mt-2` collide everywhere; content-bearing ones like `bg-clip-text` or
+  // `from-purple-500` are usually unique enough to anchor on. Anchor is
+  // the BARE class name — in source HTML/JSX the class is space-delimited
+  // inside the `class="..."` attribute, so `"bg-clip-text"` (with quotes)
+  // would never match; the unquoted token does.
+  const anchor = classList.slice().sort((a, b) => b.length - a.length)[0] as string;
+  return anchor;
 }
 
 function walkElementEnd(
@@ -376,8 +722,15 @@ function walkElementEnd(
   void fileType;
 
   // Scan forward; if we hit `/>` before `>`, it's self-closing.
+  //
+  // QUOTE-INSIDE-TAG ONLY: HTML body text can contain apostrophes ("team's
+  // velocity") and quotes that aren't attribute delimiters. Treat `"` / `'`
+  // as quote-state-toggles ONLY when scanning INSIDE a tag (between `<` and
+  // its matching `>`). In body content, leave them as ordinary characters
+  // so `</h3>` after `team's` is still found. Tracked via `inTag` flag.
   let i = openIdx;
   let inQuote: '"' | "'" | null = null;
+  let inTag = true; // we start at the `<` of the target opening tag
   let depth = 0;
   while (i < source.length) {
     const ch = source[i] as string;
@@ -390,10 +743,14 @@ function walkElementEnd(
       i += 1;
       continue;
     }
-    if (ch === '"' || ch === "'") {
+    if (inTag && (ch === '"' || ch === "'")) {
       inQuote = ch;
       i += 1;
       continue;
+    }
+    if (inTag && ch === ">") {
+      inTag = false;
+      // fallthrough to depth-tracking below
     }
     if (ch === "<") {
       // Lookahead.
@@ -422,6 +779,9 @@ function walkElementEnd(
             }
           }
         }
+        // Entering a new tag — flip inTag so quote chars are honored again
+        // until the new tag's `>`.
+        inTag = true;
       }
     }
     i += 1;

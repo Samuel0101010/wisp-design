@@ -219,6 +219,54 @@ describe("searchSkills — relevance on real repo", () => {
   });
 });
 
+describe("searchSkills — stopwords + stemming + field-boost", () => {
+  it("stopword-only query returns empty results", async () => {
+    // "the and for" are all stopwords → tokens list collapses to [] →
+    // contract says return [] (same shape as an empty query).
+    const results = await searchSkills("the and for", {
+      skillsRoot: REPO_SKILLS,
+    });
+    expect(results).toEqual([]);
+  });
+
+  it("stem-truncation hits plural / inflection variants", async () => {
+    const root = makeTmpSkillsRoot();
+    mkdirSync(join(root, "data", "anchors"), { recursive: true });
+    // File contains "dashboards" only. Query "dashboard" stems to
+    // "dashbo" (6 chars), which is a substring of "dashboards" — hit.
+    writeFileSync(
+      join(root, "data", "anchors", "d.md"),
+      "# Dash\nMultiple dashboards listed here.\n",
+      "utf8",
+    );
+    const results = await searchSkills("dashboard", { skillsRoot: root });
+    expect(results.length).toBe(1);
+    expect(results[0]?.filePath).toMatch(/d\.md$/);
+  });
+
+  it("description-field hit outranks an equal body-only hit", async () => {
+    const root = makeTmpSkillsRoot();
+    mkdirSync(join(root, "data", "anchors"), { recursive: true });
+    // File A: token only in YAML description.
+    writeFileSync(
+      join(root, "data", "anchors", "a.md"),
+      "---\nname: a\ndescription: needle anchor card here\n---\n# A\nIrrelevant body.\n",
+      "utf8",
+    );
+    // File B: token only in body, same byte-length ballpark so length-
+    // norm doesn't dominate the test.
+    writeFileSync(
+      join(root, "data", "anchors", "b.md"),
+      "---\nname: b\ndescription: unrelated description text here\n---\n# B\nneedle body.\n",
+      "utf8",
+    );
+    const results = await searchSkills("needle", { skillsRoot: root });
+    expect(results.length).toBe(2);
+    // Description hit is weighted ×2 → A outranks B.
+    expect(results[0]?.filePath).toMatch(/a\.md$/);
+  });
+});
+
 describe("runSkills CLI", () => {
   it("`skills index` → exit 0 + valid JSON", async () => {
     const cap = captureStdio();

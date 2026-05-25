@@ -384,4 +384,143 @@ function collapseDoubleBlank(s: string, near: number): string {
 // Module export
 // ---------------------------------------------------------------------------
 
-export const injectModule = { injectLiveScript, removeLiveScript };
+// ---------------------------------------------------------------------------
+// discoverInjectedFiles + refreshInjectToken — Phase 7.1
+//
+// At session start, scan the project root for files already carrying a
+// `wisp-inject-start:` marker (re-attached from a previous session). The
+// agent records them in `state.injectedFiles` so accept-splice can find
+// the right source file later, and refreshes the token query-param in the
+// existing <script> tag so the browser POSTs authenticate.
+// ---------------------------------------------------------------------------
+
+import { promises as fsp } from "node:fs";
+import * as nodePath from "node:path";
+
+const INJECT_SCAN_EXTENSIONS = new Set([
+  ".html", ".htm",
+  ".jsx", ".tsx", ".js", ".ts",
+  ".vue", ".svelte", ".astro",
+]);
+
+const INJECT_SCAN_SKIP_DIRS = new Set([
+  "node_modules", "dist", "build", ".git", ".next", ".nuxt",
+  ".svelte-kit", ".astro", "out", "coverage", ".wisp", ".turbo",
+  ".cache", ".vite",
+]);
+
+const INJECT_MARKER_RE = /<!--\s*wisp-inject-start:/;
+
+interface DiscoverOptions {
+  projectRoot: string;
+  maxFiles?: number;
+}
+
+export async function discoverInjectedFiles(
+  opts: DiscoverOptions,
+): Promise<string[]> {
+  const maxFiles = opts.maxFiles ?? 32;
+  const found: string[] = [];
+  const stack: string[] = [opts.projectRoot];
+  // BFS depth-capped to keep startup cost bounded on large monorepos.
+  let visited = 0;
+  while (stack.length > 0 && found.length < maxFiles && visited < 5000) {
+    const dir = stack.shift()!;
+    visited += 1;
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (ent.name.startsWith(".") && !INJECT_SCAN_SKIP_DIRS.has(ent.name)) {
+        // Allow scan of dotfiles other than hardcoded skip-dirs, but most
+        // dotfiles aren't source — keep behavior conservative.
+        continue;
+      }
+      const abs = nodePath.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (INJECT_SCAN_SKIP_DIRS.has(ent.name)) continue;
+        stack.push(abs);
+        continue;
+      }
+      const ext = nodePath.extname(ent.name).toLowerCase();
+      if (!INJECT_SCAN_EXTENSIONS.has(ext)) continue;
+      // Read just the first ~32KB to find the marker (it lives in <head>).
+      let text: string;
+      try {
+        const fh = await fsp.open(abs, "r");
+        try {
+          const buf = Buffer.alloc(32 * 1024);
+          const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+          text = buf.subarray(0, bytesRead).toString("utf8");
+        } finally {
+          await fh.close();
+        }
+      } catch {
+        continue;
+      }
+      if (INJECT_MARKER_RE.test(text)) {
+        found.push(abs);
+      }
+    }
+  }
+  return found;
+}
+
+interface RefreshOptions {
+  bridgeUrl: string;
+  token: string;
+}
+
+const SCRIPT_SRC_RE =
+  /<script\s+id=["']wisp-design-live["'][^>]*\bsrc=["']([^"']+)["'][^>]*>/;
+// `[^\s>]*` (zero-or-more, not one-or-more) so a previously-emptied token
+// field — e.g. left over from a broken sed/test pipeline — still matches
+// and can be repopulated by the next refresh.
+const INJECT_START_TOKEN_RE = /(<!--\s*wisp-inject-start:[^>]*?\btoken=)([^\s>]*)/;
+
+export async function refreshInjectToken(
+  filePath: string,
+  opts: RefreshOptions,
+  ctx: { projectRoot: string },
+): Promise<void> {
+  void ctx; // currently unused but kept for symmetry
+  let text: string;
+  try {
+    text = await fsp.readFile(filePath, "utf8");
+  } catch {
+    return;
+  }
+  // Rewrite the token in the <script src=…> AND in the <!-- wisp-inject-start … -->
+  // marker. Both should always agree so the browser auto-init can match.
+  let next = text;
+  const scriptMatch = SCRIPT_SRC_RE.exec(next);
+  if (scriptMatch && scriptMatch[1]) {
+    const oldSrc = scriptMatch[1];
+    let newSrc = oldSrc;
+    try {
+      const u = new URL(oldSrc);
+      u.searchParams.set("token", opts.token);
+      // Also rewrite origin so the script re-points at the new bridge port.
+      const newBase = new URL(opts.bridgeUrl);
+      u.protocol = newBase.protocol;
+      u.host = newBase.host;
+      newSrc = u.toString();
+    } catch {
+      newSrc = `${opts.bridgeUrl}/live.js?token=${encodeURIComponent(opts.token)}`;
+    }
+    next = next.replace(SCRIPT_SRC_RE, (full) =>
+      full.replace(oldSrc, newSrc),
+    );
+  }
+  next = next.replace(INJECT_START_TOKEN_RE, (_m, prefix) =>
+    `${prefix}${opts.token}`,
+  );
+  if (next !== text) {
+    await fsp.writeFile(filePath, next, "utf8");
+  }
+}
+
+export const injectModule = { injectLiveScript, removeLiveScript, discoverInjectedFiles, refreshInjectToken };

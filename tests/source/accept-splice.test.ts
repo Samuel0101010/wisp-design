@@ -263,7 +263,12 @@ describe("acceptVariant — end-to-end", () => {
 
     expect(res.variantId).toBe("1");
     expect(res.emittedCss).toContain("padding: 24px");
-    expect(res.emittedCss).toContain('[data-wisp-target="t1"] .inner');
+    // Phase 7.1: scopeSelector is now the targetId DIRECTLY (it IS the
+    // element's CSS selector — built by picker.buildSelector), not a
+    // synthesised `[data-wisp-target="…"]` attribute that was never written
+    // onto the DOM. carbonize emits `<scope> <descendant>` for the inner
+    // selector, so `.inner` becomes `t1 .inner`.
+    expect(res.emittedCss).toContain("t1 .inner");
 
     const out = readFileSync(file, "utf8");
     // Permanent style block landed.

@@ -166,6 +166,12 @@ export const AcceptEventSchema = z.object({
   target: ElementTargetSchema,
   variantId: z.string().min(1),
   sessionId,
+  // Phase 7.8 — Browser includes the accepted variant's CSS so the in-process
+  // accept handler can splice it into source without regenerating from a stub.
+  // Optional for back-compat: older browsers / tests omit this and the handler
+  // falls back to stub regeneration.
+  variantCss: z.string().optional(),
+  rationale: z.string().optional(),
 });
 
 export const DiscardEventSchema = z.object({
@@ -411,6 +417,12 @@ export interface BridgeServerOptions {
   // Auth token; if undefined, the server generates one and writes it to the
   // port-lock file. Exposed for tests that need a deterministic token.
   token?: string;
+  // Invoked once at the start of `stopServer()` — whether triggered by the
+  // `/stop` HTTP endpoint, by SIGINT/SIGTERM via the live runner's shutdown
+  // path, or by the test-harness calling `handle.stop()`. Lets the caller
+  // tear down resources the bridge doesn't own (e.g. the live runner's
+  // port.lock file). Errors are swallowed — cleanup must be best-effort.
+  onBeforeStop?: () => Promise<void>;
 }
 
 export interface BridgeServerHandle {

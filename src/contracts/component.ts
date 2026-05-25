@@ -266,12 +266,15 @@ export interface ComponentDetectModule {
 export const COMPONENT_DETECT_QUICK_SAMPLE_SIZE = 10;
 
 // Below this aggregated confidence, the detector returns `primaryLib =
-// vanilla` and the agent falls back to `css-override`. Tuned by
-// research/competitive-landscape.md § Improvement #11 (Impeccable's edit-
-// surface heuristic): 0.6 captures shadcn projects with ≥2 imports + the cn
-// utility, while filtering out projects that merely have @radix-ui as a
-// transitive dep.
-export const COMPONENT_DETECT_CONFIDENCE_THRESHOLD = 0.6;
+// vanilla` and the agent falls back to `css-override`.
+//
+// Calibrated by QA-C 2026-05-23: with `(pkgWeight=0.5 + N×importWeight=0.4) /
+// (1+N)` the limit as N→∞ is 0.4. A project with 1 pkg dep + 1-3 source
+// imports lands at 0.42-0.45 — so a 0.6 cutoff is structurally unreachable
+// for mui/chakra/ant/tailwind-only projects and they fall through to
+// `vanilla`. Lowering to 0.45 admits the real detections without admitting
+// transient single-file noise (which only reaches 0.4 max).
+export const COMPONENT_DETECT_CONFIDENCE_THRESHOLD = 0.45;
 
 // Maximum aggregated weight per FILE before averaging across the sample.
 // Caps single-file outliers (a file that imports 8 shadcn primitives would

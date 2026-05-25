@@ -81,13 +81,13 @@ describe("detect — primary lib identification", () => {
     );
   });
 
-  it("@radix-ui dep + import → radix signals emitted (avg-formula caps at 0.45, falls back to vanilla)", async () => {
-    // KNOWN BEHAVIOUR: radix/mui/chakra/ant rules carry pkg.json+import only
-    // (no className/filename patterns) — their max average over files-that-
-    // signalled is (0.5 + 0.4*N) / (N+1) which asymptotes to 0.4. They can
-    // never cross the 0.6 threshold with the cap-then-average aggregator and
-    // intentionally fall back to vanilla. We pin the signals + the fallback
-    // so any future calibration change is loud.
+  it("@radix-ui dep + import → primary=radix (Phase 6.5 calibration: threshold 0.6→0.45)", async () => {
+    // Phase 6 known-bug: the (0.5 + 0.4·N)/(N+1) asymptote at 0.4 left
+    // radix/mui/chakra/ant projects falling back to vanilla under the old
+    // 0.6 threshold. Phase 6.5 lowered the cutoff to 0.45 (see
+    // `src/contracts/component.ts > COMPONENT_DETECT_CONFIDENCE_THRESHOLD`)
+    // — these libs now cross the line at typical signal density (1 pkg.json
+    // dep + 1 source import → confidence ≈ 0.45).
     seedProject(
       root,
       {
@@ -102,15 +102,14 @@ describe("detect — primary lib identification", () => {
       },
     );
     const res = await detect({ projectRoot: root, quick: true });
-    expect(res.primaryLib).toBe("vanilla");
-    // Signals were still detected — visible in the signals array.
+    expect(res.primaryLib).toBe("radix");
     const libs = new Set(res.signals.map((s) => s.detail));
     expect(
       [...libs].some((d) => d.includes("@radix-ui")),
     ).toBe(true);
   });
 
-  it("@mui/material → signals emitted; falls back to vanilla (same cap-avg limitation)", async () => {
+  it("@mui/material → primary=mui (Phase 6.5 threshold)", async () => {
     seedProject(
       root,
       {
@@ -125,12 +124,12 @@ describe("detect — primary lib identification", () => {
       },
     );
     const res = await detect({ projectRoot: root, quick: true });
-    expect(res.primaryLib).toBe("vanilla");
+    expect(res.primaryLib).toBe("mui");
     const muiSignals = res.signals.filter((s) => s.detail.includes("@mui"));
     expect(muiSignals.length).toBeGreaterThan(0);
   });
 
-  it("@chakra-ui/react → signals emitted; falls back to vanilla", async () => {
+  it("@chakra-ui/react → primary=chakra (Phase 6.5 threshold)", async () => {
     seedProject(
       root,
       {
@@ -145,10 +144,10 @@ describe("detect — primary lib identification", () => {
       },
     );
     const res = await detect({ projectRoot: root, quick: true });
-    expect(res.primaryLib).toBe("vanilla");
+    expect(res.primaryLib).toBe("chakra");
   });
 
-  it("antd → signals emitted; falls back to vanilla", async () => {
+  it("antd → primary=ant (Phase 6.5 threshold)", async () => {
     seedProject(
       root,
       {
@@ -163,7 +162,7 @@ describe("detect — primary lib identification", () => {
       },
     );
     const res = await detect({ projectRoot: root, quick: true });
-    expect(res.primaryLib).toBe("vanilla");
+    expect(res.primaryLib).toBe("ant");
   });
 
   it("tailwindcss + class matches in a single file → primary=tailwind", async () => {

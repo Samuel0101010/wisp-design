@@ -1,0 +1,12 @@
+/* Slop fixture 06: glassmorphism via raw CSS, no wisp-justify comment */
+.glass-panel {
+  backdrop-filter: blur(16px);
+  background: rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 12px;
+}
+
+.modal-overlay {
+  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.3);
+}

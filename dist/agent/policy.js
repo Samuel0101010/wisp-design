@@ -434,7 +434,13 @@ var AcceptEventSchema = z3.object({
   kind: z3.literal("accept"),
   target: ElementTargetSchema,
   variantId: z3.string().min(1),
-  sessionId
+  sessionId,
+  // Phase 7.8 — Browser includes the accepted variant's CSS so the in-process
+  // accept handler can splice it into source without regenerating from a stub.
+  // Optional for back-compat: older browsers / tests omit this and the handler
+  // falls back to stub regeneration.
+  variantCss: z3.string().optional(),
+  rationale: z3.string().optional()
 });
 var DiscardEventSchema = z3.object({
   kind: z3.literal("discard"),

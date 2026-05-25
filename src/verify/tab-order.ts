@@ -40,19 +40,36 @@ const INTERACTIVE_SELECTORS = [
 // because it overrides the document's natural focus order.
 // ---------------------------------------------------------------------------
 
-function detectNonzeroTabindex(doc: Document): TabOrderViolation[] {
-  const out: TabOrderViolation[] = [];
+// Tab-order violations include a `message` field (beyond the typed interface)
+// so the CLI formatter in src/agent/audit.ts can render them without knowing
+// the shape of every violation type. The field duplicates `detail` in human-
+// readable form.
+type TabOrderViolationWithMsg = TabOrderViolation & { message: string };
+
+function mkTabViolation(
+  kind: TabOrderViolation["kind"],
+  selector: string,
+  message: string,
+): TabOrderViolationWithMsg {
+  return { kind, selector, detail: message, message };
+}
+
+function detectNonzeroTabindex(doc: Document): TabOrderViolationWithMsg[] {
+  const out: TabOrderViolationWithMsg[] = [];
   const elements = doc.querySelectorAll("[tabindex]");
   elements.forEach((el) => {
     const raw = (el as Element).getAttribute("tabindex");
     if (raw === null) return;
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return;
-    out.push({
-      kind: "nonzero-tabindex",
-      selector: cssPathFor(el as Element),
-      detail: `tabindex=${raw} on <${(el as Element).tagName.toLowerCase()}>`,
-    });
+    const sel = cssPathFor(el as Element);
+    out.push(
+      mkTabViolation(
+        "nonzero-tabindex",
+        sel,
+        `${sel} has tabindex=${raw} (positive) — disrupts natural tab order; use tabindex="0" or remove`,
+      ),
+    );
   });
   return out;
 }
@@ -66,7 +83,7 @@ function detectNonzeroTabindex(doc: Document): TabOrderViolation[] {
 // use getComputedStyle on each pseudo-state.
 // ---------------------------------------------------------------------------
 
-function detectMissingFocusRing(doc: Document): TabOrderViolation[] {
+function detectMissingFocusRing(doc: Document): TabOrderViolationWithMsg[] {
   // Pull all stylesheet text once.
   const css: string[] = [];
   const styles = doc.querySelectorAll("style");
@@ -76,18 +93,21 @@ function detectMissingFocusRing(doc: Document): TabOrderViolation[] {
   const inline = css.join("\n");
   const hasFocusVisibleRule = /:focus(-visible)?\b/.test(inline);
 
-  const out: TabOrderViolation[] = [];
+  const out: TabOrderViolationWithMsg[] = [];
   const elements = doc.querySelectorAll(INTERACTIVE_SELECTORS.join(","));
   elements.forEach((el) => {
     // If any focus-visible rule exists at all, we don't flag per-element —
     // the project has SOME focus handling. Targeted per-element detection
     // is a Phase-6 enhancement (real-browser computedStyle).
     if (hasFocusVisibleRule) return;
-    out.push({
-      kind: "missing-focus-ring",
-      selector: cssPathFor(el as Element),
-      detail: "no :focus or :focus-visible rule found in the page stylesheets",
-    });
+    const sel = cssPathFor(el as Element);
+    out.push(
+      mkTabViolation(
+        "missing-focus-ring",
+        sel,
+        `${sel} has no :focus or :focus-visible rule — keyboard users will see no focus indicator`,
+      ),
+    );
   });
   // Cap so we don't spam warnings on a 500-button storybook page.
   return out.slice(0, 10);
@@ -101,7 +121,7 @@ function detectMissingFocusRing(doc: Document): TabOrderViolation[] {
 // for the structural smell.
 // ---------------------------------------------------------------------------
 
-function detectFocusTrapLeak(doc: Document): TabOrderViolation[] {
+function detectFocusTrapLeak(doc: Document): TabOrderViolationWithMsg[] {
   const dialogs: Element[] = [];
   doc
     .querySelectorAll("[role=\"dialog\"],[role=\"alertdialog\"],dialog")
@@ -113,7 +133,7 @@ function detectFocusTrapLeak(doc: Document): TabOrderViolation[] {
     });
   if (dialogs.length === 0) return [];
 
-  const out: TabOrderViolation[] = [];
+  const out: TabOrderViolationWithMsg[] = [];
   for (const dialog of dialogs) {
     // Focusables ANYWHERE in the document that are NOT descendants of the
     // dialog AND are not hidden via [aria-hidden=true] / [inert].
@@ -137,11 +157,15 @@ function detectFocusTrapLeak(doc: Document): TabOrderViolation[] {
       if (!hidden) leaks.push(el as Element);
     });
     if (leaks.length > 0) {
-      out.push({
-        kind: "focus-trap-leak",
-        selector: cssPathFor(dialog),
-        detail: `${leaks.length} focusable element${leaks.length > 1 ? "s" : ""} reachable outside the open modal`,
-      });
+      const sel = cssPathFor(dialog);
+      const n = leaks.length;
+      out.push(
+        mkTabViolation(
+          "focus-trap-leak",
+          sel,
+          `${sel} is an open modal but ${n} focusable element${n > 1 ? "s are" : " is"} reachable outside — tab focus escapes the trap`,
+        ),
+      );
     }
   }
   return out;
@@ -173,9 +197,10 @@ export async function runTabOrder(opts: {
   const startedAt = Date.now();
   const jsdomMod = await loadJsdom();
   if (jsdomMod === null) {
+    // jsdom is a regular dependency — failure to import is a runtime error.
     return {
       name: "tab-order",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -221,7 +246,7 @@ export async function runTabOrder(opts: {
   } catch (err) {
     return {
       name: "tab-order",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",

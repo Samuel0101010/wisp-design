@@ -1,0 +1,17 @@
+/* Slop fixture 11: purple-to-blue gradient (background, not text-clip) */
+.hero-bg {
+  background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%);
+  min-height: 400px;
+}
+
+.cta-banner {
+  background: linear-gradient(to right, purple, indigo, blue);
+  padding: 48px 32px;
+}
+
+.gradient-btn {
+  background: linear-gradient(90deg, violet, #2563eb);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+}

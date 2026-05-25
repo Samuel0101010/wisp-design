@@ -39,12 +39,46 @@ import {
   writeJsonResult,
 } from "./_helpers.js";
 
-// Phase-4 controller key. Phase 6+ swaps this for an actual AgentDB
-// controller handle (`mcp__ruflo__agentdb_controllers` output).
+// Production controller key for the in-process retriever. NOT a stub —
+// the spawned CLI process has no MCP transport, so AgentDB-HNSW is opt-in
+// from the agent-loop side (which IS MCP-aware). See docs/skills-index.md.
+// The string value is stable and callers may match on it.
 const AGENT_DB_CONTROLLER_STUB = "phase-4-stub";
 
 // File extensions the indexer recognises. Anything else is skipped.
 const INDEXABLE_EXTENSIONS = new Set<string>([".md", ".csv"]);
+
+// Stopwords (EN + DE basics). Tokens shorter than 2 chars are dropped
+// before this filter runs; everything here is ≥2 chars on purpose so the
+// `.length < 2` guard stays the cheaper first check.
+const STOPWORDS = new Set<string>([
+  // English
+  "the", "and", "for", "with", "from", "into", "this", "that", "these",
+  "those", "are", "was", "were", "but", "not", "you", "your", "our",
+  "their", "what", "when", "where", "which", "who", "whom", "how", "why",
+  "can", "will", "would", "could", "should", "have", "has", "had", "all",
+  "any", "some", "more", "most", "much", "than", "then", "them", "they",
+  // German
+  "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer",
+  "eines", "einem", "und", "oder", "aber", "doch", "auch", "noch", "nur",
+  "wie", "was", "wo", "wer", "wen", "wem", "wessen", "ist", "sind",
+  "war", "waren", "mit", "von", "vom", "zur", "zum", "im", "am", "an",
+  "auf", "aus", "bei", "nach", "vor", "ueber", "unter", "fuer", "gegen",
+]);
+
+// Tokens get truncated to this many chars before matching. Cheap
+// quasi-stemming: "dashboards" / "dashboard" / "dashbo" all collapse to
+// "dashbo" so plural / inflection variants still hit. Picked by spot-
+// checking the curated corpus: 6 keeps "linear" / "anchor" / "policy"
+// distinct from each other but folds "designs" → "design" → "design".
+const STEM_LEN = 6;
+
+// Field-boost weights. Frontmatter `description:` and H1 title both
+// represent "what this file is about" — counting hits there ×2 vs body
+// keeps the curated anchor cards reachable by their declared identity
+// even when an unrelated long doc happens to mention the word more often.
+const FIELD_BOOST_DESCRIPTION = 2;
+const FIELD_BOOST_TITLE = 2;
 
 // Sub-namespaces we expect under `skills/data/`. Doctor warns when a slice
 // is missing; the agent prompt uses these to filter retrieval.
@@ -134,6 +168,38 @@ function deriveSubNamespace(skillsRoot: string, absPath: string): string {
   return "uncategorized";
 }
 
+// Tokenise + stopword-filter + stem-truncate. Used for both query and
+// field-extraction. Tokens shorter than 2 chars are dropped (matches the
+// public CLI behaviour the tests pin); stopwords are dropped next; the
+// survivors are truncated to STEM_LEN for cheap stemming.
+function tokenize(input: string): string[] {
+  const lower = input.toLowerCase();
+  // Split on anything that isn't a word-char or hyphen. Hyphen preserved
+  // so "anti-slop" stays one token (it's a deliberate compound in the
+  // corpus).
+  const raw = lower.split(/[^a-z0-9\-]+/);
+  const out: string[] = [];
+  for (const t of raw) {
+    if (t.length < 2) continue;
+    if (STOPWORDS.has(t)) continue;
+    out.push(t.length > STEM_LEN ? t.slice(0, STEM_LEN) : t);
+  }
+  return out;
+}
+
+// Extract the YAML frontmatter `description:` value if present. The skill
+// corpus uses this field per the Anthropic Skills spec; boosting hits on
+// it lets a search for "live frontend design" find SKILL.md by its
+// declared purpose.
+function extractDescription(body: string): string {
+  if (!body.startsWith("---")) return "";
+  const end = body.indexOf("\n---", 3);
+  if (end === -1) return "";
+  const fm = body.slice(0, end);
+  const m = fm.match(/^description:\s*(.+)$/im);
+  return m?.[1]?.trim() ?? "";
+}
+
 // Best-effort title extraction. Markdown H1 → CSV header → filename.
 function extractTitle(filePath: string, body: string): string {
   // Strip a YAML frontmatter block so its `title:` doesn't masquerade as
@@ -219,10 +285,7 @@ export async function searchSkills(
   const trimmedQuery = query.trim();
   if (trimmedQuery === "") return [];
 
-  const tokens = trimmedQuery
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2);
+  const tokens = tokenize(trimmedQuery);
   if (tokens.length === 0) return [];
 
   const allFiles = await walkDir(skillsRoot);
@@ -251,19 +314,31 @@ export async function searchSkills(
 
     // Lowercased buffer for scoring — preserve original for snippet.
     const lower = body.toLowerCase();
+    // Field-boost slices: description (from YAML frontmatter) + H1 title.
+    // Both already lowercased so the inner substring scan stays cheap.
+    const descLower = extractDescription(body).toLowerCase();
+    const titleLower = extractTitle(file, body).toLowerCase();
     let score = 0;
     for (const tok of tokens) {
       if (tok === "") continue;
+      // Body hit count — unchanged from the original implementation.
       let idx = 0;
-      let hits = 0;
+      let bodyHits = 0;
       while (idx < lower.length) {
         const found = lower.indexOf(tok, idx);
         if (found === -1) break;
-        hits += 1;
+        bodyHits += 1;
         idx = found + tok.length;
-        if (hits > 100) break; // sanity cap per token
+        if (bodyHits > 100) break; // sanity cap per token
       }
-      score += hits;
+      // Description + title hits are typically 0–2, no sanity cap needed.
+      const descHits = descLower === "" ? 0 : countOccurrences(descLower, tok);
+      const titleHits =
+        titleLower === "" ? 0 : countOccurrences(titleLower, tok);
+      score +=
+        bodyHits +
+        descHits * FIELD_BOOST_DESCRIPTION +
+        titleHits * FIELD_BOOST_TITLE;
     }
     if (score === 0) continue;
 
@@ -284,6 +359,22 @@ export async function searchSkills(
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, parsed.topK);
+}
+
+// Count non-overlapping occurrences of `needle` in `haystack`. Both
+// already lowercased upstream; this is the field-boost-slice counterpart
+// to the body-hit loop in searchSkills.
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle === "") return 0;
+  let idx = 0;
+  let n = 0;
+  while (idx < haystack.length) {
+    const found = haystack.indexOf(needle, idx);
+    if (found === -1) break;
+    n += 1;
+    idx = found + needle.length;
+  }
+  return n;
 }
 
 // Pull a ~240-char window around the first matching token. If no token

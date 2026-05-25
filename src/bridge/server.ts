@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   BridgeEventSchema,
   LONG_POLL_CAP_MS,
@@ -32,8 +33,23 @@ import {
   type Query,
 } from "./http-helpers.js";
 
-const LIVE_JS_STUB =
-  "// wisp-design live.js — Phase 1 stub. Phase 2 wires the IIFE.\n";
+const LIVE_JS_FALLBACK_STUB =
+  "// wisp-design live.js — bundle not found at dist/live.js. " +
+  "Did you run `npm run build`?\n";
+
+// Resolve `dist/live.js` relative to the bridge module (`dist/bridge/server.js`
+// once built, `src/bridge/server.ts` under vitest). `new URL("../live.js",
+// import.meta.url)` works for the built layout (dist/bridge → dist). For the
+// source layout (src/bridge → src) the file doesn't exist; we fall back to
+// `<cwd>/dist/live.js` which IS the right path when running from the repo.
+const LIVE_JS_BUNDLE_PATH = (() => {
+  try {
+    const fromModule = fileURLToPath(new URL("../live.js", import.meta.url));
+    return fromModule;
+  } catch {
+    return resolve(process.cwd(), "dist/live.js");
+  }
+})();
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 const EVENT_QUEUE_MAX = 1024;
 const VERSION = "0.1.0-prerelease";
@@ -172,13 +188,27 @@ export async function startBridgeServer(
     sendJson(res, 200, status);
   };
 
-  const handleLiveJs = (res: ServerResponse): void => {
+  const handleLiveJs = async (res: ServerResponse): Promise<void> => {
+    // Read the built IIFE bundle. If it's missing (uninstalled package, dev
+    // run without build), fall back to the stub so the browser still gets
+    // valid JS and the console message hints at the cause.
+    let body: string;
+    let bodyFromBundle = false;
+    try {
+      body = await readFile(LIVE_JS_BUNDLE_PATH, "utf8");
+      bodyFromBundle = true;
+    } catch {
+      body = LIVE_JS_FALLBACK_STUB;
+    }
     res.writeHead(200, {
       "Content-Type": "application/javascript; charset=utf-8",
-      "Cache-Control": "no-store",
+      // The IIFE bundle is small and content-addressed by token. Allow short
+      // browser caching when serving the real bundle so multi-tab demos
+      // don't refetch it on every reload.
+      "Cache-Control": bodyFromBundle ? "public, max-age=60" : "no-store",
       "Access-Control-Allow-Origin": "*",
     });
-    res.end(LIVE_JS_STUB);
+    res.end(body);
   };
 
   const handleDesignSystem = async (res: ServerResponse): Promise<void> => {
@@ -197,6 +227,86 @@ export async function startBridgeServer(
       }
       sendError(res, 500, "READ_FAILED", (err as Error).message);
     }
+  };
+
+  // ---------------------------------------------------------------------
+  // /sessions — read recent accept-variant entries from session log files.
+  // Used by the browser's "Recent" tool panel to surface design history
+  // without going through the agent. Returns the most-recent 20 entries
+  // across all session files, newest first.
+  // ---------------------------------------------------------------------
+  const handleSessions = async (res: ServerResponse): Promise<void> => {
+    const sessionsDir = resolve(projectRoot, ".wisp/sessions");
+    interface Entry {
+      ts: string;
+      sessionId: string;
+      targetId: string;
+      variantId: string;
+      filePath: string;
+      byteSize: number;
+    }
+    const entries: Entry[] = [];
+    let dir: string[];
+    try {
+      const { readdir } = await import("node:fs/promises");
+      dir = await readdir(sessionsDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ entries: [] }));
+        return;
+      }
+      sendError(res, 500, "READ_FAILED", (err as Error).message);
+      return;
+    }
+    // Read each .jsonl, scan for accept-variant entries — file IO is bounded
+    // by the cap on session files and we only keep the latest 20.
+    const files = dir.filter((f) => f.endsWith(".jsonl")).slice(0, 50);
+    for (const fname of files) {
+      let text: string;
+      try {
+        text = await readFile(resolve(sessionsDir, fname), "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of text.split("\n")) {
+        if (line.length === 0) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (typeof parsed !== "object" || parsed === null) continue;
+        const obj = parsed as Record<string, unknown>;
+        if (obj.kind !== "accept-variant") continue;
+        const detail = obj.detail as Record<string, unknown> | undefined;
+        // Only the first accept-variant entry per accept has a targetId;
+        // the second (one-arg form) does not. We only want the full record.
+        if (!detail || typeof detail.targetId !== "string") continue;
+        entries.push({
+          ts: typeof obj.ts === "string" ? obj.ts : "",
+          sessionId: typeof obj.sessionId === "string" ? obj.sessionId : "",
+          targetId: detail.targetId,
+          variantId:
+            typeof detail.variantId === "string" ? detail.variantId : "",
+          filePath:
+            typeof obj.filePath === "string" ? obj.filePath : "",
+          byteSize:
+            typeof detail.byteSize === "number" ? detail.byteSize : 0,
+        });
+      }
+    }
+    // Newest first; truncate to 20.
+    entries.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({ entries: entries.slice(0, 20) }));
   };
 
   const handleSource = async (
@@ -359,6 +469,16 @@ export async function startBridgeServer(
   const stopServer = async (graceMs = 500): Promise<void> => {
     if (stopping) return;
     stopping = true;
+    // Caller-owned teardown — port.lock release in the live runner, custom
+    // teardown in tests. Errors are swallowed so HTTP stop and signal-driven
+    // stop behave identically.
+    if (opts.onBeforeStop !== undefined) {
+      try {
+        await opts.onBeforeStop();
+      } catch {
+        // ignore — best-effort
+      }
+    }
     // Drain pending waiters with empty responses.
     for (const w of [...pollWaiters]) deliverWaiter(w);
     // Close SSE subscribers.
@@ -385,12 +505,34 @@ export async function startBridgeServer(
     }, 50).unref();
   };
 
+  // ---- CORS — browser served at dev-server origin (e.g. 127.0.0.1:5173) must
+  //          POST/GET to the bridge origin (e.g. 127.0.0.1:31338). Without
+  //          `Access-Control-Allow-Origin` + a working OPTIONS preflight,
+  //          Chrome silently blocks every browser→bridge fetch. The token
+  //          guards the actual data — `*` is safe here because credentials
+  //          (cookies) aren't used; the token rides in the URL query string.
+  const setCorsHeaders = (res: ServerResponse): void => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Cache-Control");
+    res.setHeader("Access-Control-Max-Age", "600");
+  };
+
   // ---- Router ----
 
   const router = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const method = req.method ?? "GET";
     const path = urlPath(req);
     const q = parseQuery(req);
+
+    // CORS headers on every response. Preflight short-circuits before auth so
+    // the browser can negotiate without a token.
+    setCorsHeaders(res);
+    if (method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     // /health and /live.js are unauthenticated.
     if (method === "GET" && path === "/health") {
@@ -415,6 +557,10 @@ export async function startBridgeServer(
     }
     if (method === "GET" && path === "/design-system.json") {
       await handleDesignSystem(res);
+      return;
+    }
+    if (method === "GET" && path === "/sessions") {
+      await handleSessions(res);
       return;
     }
     if (method === "GET" && path === "/source") {

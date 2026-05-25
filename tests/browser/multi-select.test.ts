@@ -124,7 +124,7 @@ describe("attachMultiSelect", () => {
     detach();
   });
 
-  it("detach removes listeners and cleans decorations", () => {
+  it("detach removes listeners but keeps decorations (Phase 7.4 — badges persist into configuring)", () => {
     const onAdd = vi.fn();
     let counter = 0;
     const detach = attachMultiSelect({
@@ -142,7 +142,9 @@ describe("attachMultiSelect", () => {
 
     detach();
 
-    expect(d.hasAttribute("data-wisp-selected")).toBe(false);
+    // Decoration STAYS so the user can see selected elements while
+    // configuring. `multi.clear()` is the explicit wipe signal — not detach.
+    expect(d.hasAttribute("data-wisp-selected")).toBe(true);
 
     // Further clicks after detach are ignored.
     dispatchClick(d, true);

@@ -1,0 +1,15 @@
+/* Slop fixture 04: gradient text via raw CSS */
+h1.gradient-headline {
+  background: linear-gradient(to right, purple, blue);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: 3rem;
+  font-weight: 800;
+}
+
+.btn-gradient {
+  background-clip: text;
+  color: transparent;
+  background: linear-gradient(90deg, #9333ea, #3b82f6);
+}

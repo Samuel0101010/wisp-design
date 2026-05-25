@@ -158,7 +158,7 @@ var init_verify = __esm({
       screenshotEnabled: z.boolean().default(false)
     });
     ANTI_SLOP_LINTER_BUDGET_MS = 50;
-    A11Y_AXE_BUDGET_MS = 800;
+    A11Y_AXE_BUDGET_MS = 1500;
     CONSOLE_SCAN_BUDGET_MS = 2e3;
     TAB_ORDER_BUDGET_MS = 300;
     REDUCED_MOTION_BUDGET_MS = 600;
@@ -190,12 +190,134 @@ __export(anti_slop_linter_exports, {
   extractCssFromFile: () => extractCssFromFile,
   formatBlockMessage: () => formatBlockMessage,
   formatWarnMessage: () => formatWarnMessage,
+  loadBrandColors: () => loadBrandColors,
   runAntiSlop: () => runAntiSlop,
   runAntiSlopOnFiles: () => runAntiSlopOnFiles
 });
 import { promises as fs } from "fs";
-import { extname } from "path";
-function aggregateRoundNumberWhitespace(content) {
+import { extname, join } from "path";
+function extractClassNameValues(content) {
+  const results = [];
+  CLASS_ATTR_RE.lastIndex = 0;
+  let m;
+  while ((m = CLASS_ATTR_RE.exec(content)) !== null) {
+    const fullMatch = m[0] ?? "";
+    const value = m[1] ?? "";
+    const valueOffset = m.index + fullMatch.length - value.length - 1;
+    results.push({ value, offset: valueOffset });
+  }
+  return results;
+}
+function matchGradientTextClassName(value, offset, content) {
+  if (/bg-gradient-to-\w+/.test(value) && /bg-clip-text/.test(value) && /text-transparent/.test(value)) {
+    const { line, column } = lineColAt(content, offset);
+    return {
+      ruleId: "gradient-text-headline",
+      severity: "fail",
+      message: "gradient text via Tailwind classes (bg-clip-text text-transparent) \u2014 kills scanability.",
+      suggestedFix: "Use a solid colour. Gradient text only for purely decorative, non-interactive accents.",
+      location: { line, column, cssSnippet: snippet(value, 0, value.length) }
+    };
+  }
+  return null;
+}
+function matchHeroMetricClassName(value, offset, content) {
+  const hasBigText = /text-[789]xl\b/.test(value) || /text-\[(\d+)px\]/.test(value);
+  const hasBorderlineHeavy = /text-[456]xl\b/.test(value) && /font-(black|extrabold)\b/.test(value);
+  if (!hasBigText && !hasBorderlineHeavy) return null;
+  const arbitraryMatch = /text-\[(\d+)px\]/.exec(value);
+  if (arbitraryMatch !== null && !hasBorderlineHeavy) {
+    const px = parseInt(arbitraryMatch[1] ?? "0", 10);
+    if (px < 80) return null;
+  }
+  const window = content.slice(offset, offset + 400);
+  if (!/>\s*[^<]*\d+(%|x|K\+?|M\+?|\+|\/\d+)[^<]*</.test(window)) return null;
+  const { line, column } = lineColAt(content, offset);
+  return {
+    ruleId: "hero-metric-template",
+    severity: "fail",
+    message: "hero-metric template via Tailwind huge/bold text with metric suffix \u2014 over-used AI hero pattern.",
+    suggestedFix: "Use a real proof-point with attribution, a testimonial, or remove the metric.",
+    location: { line, column, cssSnippet: snippet(value, 0, value.length) }
+  };
+}
+function matchGlassmorphismClassName(value, offset, content) {
+  if (/backdrop-blur(-\w+)?/.test(value) && /bg-(white|black)\/\d+/.test(value)) {
+    const before = content.slice(Math.max(0, offset - 100), offset);
+    const after = content.slice(offset, Math.min(content.length, offset + 100));
+    if (/wisp-justify/.test(before) || /wisp-justify/.test(after)) return null;
+    const { line, column } = lineColAt(content, offset);
+    return {
+      ruleId: "default-glassmorphism",
+      severity: "fail",
+      message: "glassmorphism via Tailwind classes (backdrop-blur + bg-white/black opacity) \u2014 default AI vibe.",
+      suggestedFix: "Add `/* wisp-justify: <reason> */` within 100 chars, or remove the backdrop-filter.",
+      location: { line, column, cssSnippet: snippet(value, 0, value.length) }
+    };
+  }
+  return null;
+}
+function matchPurpleBlueGradientClassName(value, offset, content) {
+  if (/(from|via|to)-purple-\d+/.test(value) && /(from|via|to)-blue-\d+/.test(value)) {
+    const { line, column } = lineColAt(content, offset);
+    return {
+      ruleId: "purple-blue-gradient",
+      severity: "fail",
+      message: "purple\u2192blue gradient via Tailwind classes \u2014 generic AI brand vibe.",
+      suggestedFix: "Modulate lightness within one hue, or use the project palette colours from `.wisp/brand-spec.json`.",
+      location: { line, column, cssSnippet: snippet(value, 0, value.length) }
+    };
+  }
+  return null;
+}
+function matchDefaultBlueClassName(value, offset, content, ctx) {
+  const m = DEFAULT_BLUE_TW_CLASS_RE.exec(value);
+  if (m === null) return null;
+  const token = `${m[1]}-blue-${m[2]}`;
+  if (ctx.brandColors.has(token) || ctx.brandColors.has("#3b82f6")) {
+    return null;
+  }
+  const { line, column } = lineColAt(content, offset);
+  return {
+    ruleId: "default-tailwind-blue",
+    severity: "warn",
+    message: `default Tailwind blue utility (${token}) \u2014 single most over-used AI brand colour.`,
+    suggestedFix: "Use a project-defined accent OKLch with stated chroma, or pull from `.wisp/brand-spec.json`.",
+    location: { line, column, cssSnippet: snippet(value, 0, value.length) }
+  };
+}
+function runTailwindClassMatchers(content, ctx) {
+  const matches = extractClassNameValues(content);
+  const violations = [];
+  const defaultBlueClassHits = [];
+  const seen = /* @__PURE__ */ new Set();
+  const seenBlue = /* @__PURE__ */ new Set();
+  for (const { value, offset } of matches) {
+    const candidates = [
+      matchGradientTextClassName(value, offset, content),
+      matchHeroMetricClassName(value, offset, content),
+      matchGlassmorphismClassName(value, offset, content),
+      matchPurpleBlueGradientClassName(value, offset, content)
+    ];
+    for (const v of candidates) {
+      if (v === null) continue;
+      const key = `${v.ruleId}:${v.location?.line ?? 0}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      violations.push(v);
+    }
+    const blue = matchDefaultBlueClassName(value, offset, content, ctx);
+    if (blue !== null) {
+      const key = `${blue.ruleId}:${blue.location?.line ?? 0}:${blue.location?.column ?? 0}`;
+      if (!seenBlue.has(key)) {
+        seenBlue.add(key);
+        defaultBlueClassHits.push(blue);
+      }
+    }
+  }
+  return { violations, defaultBlueClassHits };
+}
+function aggregateRoundNumberWhitespace(content, _ctx) {
   let totalCount = 0;
   let roundCount = 0;
   let firstRoundOffset = -1;
@@ -235,6 +357,45 @@ function aggregateRoundNumberWhitespace(content) {
     }
   ];
 }
+function normalizeBlueValue(value) {
+  const v = value.toLowerCase().trim();
+  if (v === "#3b82f6") return "#3b82f6";
+  if (/^rgb\(\s*59\s*,\s*130\s*,\s*246\s*\)$/.test(v)) return "#3b82f6";
+  if (v === "var(--tw-blue-500)" || v === "var(--color-blue-500)") return v;
+  return v;
+}
+function aggregateDefaultTailwindBlue(content, ctx, additionalClassHits = []) {
+  const cssHits = [];
+  DEFAULT_BLUE_CSS_RE.lastIndex = 0;
+  let m;
+  const seenLocations = /* @__PURE__ */ new Set();
+  const rule = RULES_BY_ID.get("default-tailwind-blue");
+  if (rule === void 0) return [];
+  while ((m = DEFAULT_BLUE_CSS_RE.exec(content)) !== null) {
+    const value = m[2] ?? "";
+    const normalized = normalizeBlueValue(value);
+    if (ctx.brandColors.has(normalized)) continue;
+    const { line, column } = lineColAt(content, m.index);
+    const locKey = `${line}:${column}`;
+    if (seenLocations.has(locKey)) continue;
+    seenLocations.add(locKey);
+    cssHits.push({
+      ruleId: rule.id,
+      severity: rule.severity,
+      message: rule.message,
+      suggestedFix: rule.suggestedFix,
+      location: {
+        line,
+        column,
+        cssSnippet: snippet(content, m.index, m[0].length)
+      }
+    });
+    if (cssHits.length >= 10) break;
+  }
+  const totalOccurrences = cssHits.length + additionalClassHits.length;
+  if (totalOccurrences < DEFAULT_BLUE_MIN_OCCURRENCES) return [];
+  return [...cssHits, ...additionalClassHits].slice(0, 10);
+}
 function lineColAt(content, offset) {
   let line = 1;
   let column = 1;
@@ -255,19 +416,59 @@ function snippet(content, offset, length, max = 80) {
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max - 1)}\u2026`;
 }
-function analyseFontWeights(content) {
-  const found = /* @__PURE__ */ new Set();
-  let m;
-  FONT_WEIGHT_RE.lastIndex = 0;
-  while ((m = FONT_WEIGHT_RE.exec(content)) !== null) {
-    const value = (m[1] ?? "").toLowerCase();
-    if (value === "normal") found.add("400");
-    else if (value === "bold") found.add("700");
-    else if (value === "lighter" || value === "bolder") found.add(value);
-    else found.add(value);
-    if (found.size >= 2) return null;
+function forEachRuleBlock(content) {
+  const blocks = [];
+  let i = 0;
+  let blockStart = 0;
+  while (i < content.length) {
+    const ch = content.charCodeAt(i);
+    if (ch === 123) {
+      const selector = content.slice(blockStart, i).trim();
+      const bodyStart = i + 1;
+      let depth = 1;
+      let j = bodyStart;
+      while (j < content.length && depth > 0) {
+        const c = content.charCodeAt(j);
+        if (c === 123) depth += 1;
+        else if (c === 125) depth -= 1;
+        if (depth === 0) break;
+        j += 1;
+      }
+      const body = content.slice(bodyStart, j);
+      blocks.push({ selector, body, offset: i });
+      i = j + 1;
+      blockStart = i;
+      continue;
+    }
+    i += 1;
   }
-  if (found.size === 1) {
+  return blocks;
+}
+function blockIsTextBearing(block) {
+  if (TEXT_DECL_RE.test(block.body)) return true;
+  if (TEXT_TAG_RE.test(block.selector) && !ICON_HINT_RE.test(block.selector)) return true;
+  return false;
+}
+function analyseFontWeights(content) {
+  const distinctValues = /* @__PURE__ */ new Set();
+  let occurrenceCount = 0;
+  const blocks = forEachRuleBlock(content);
+  const scanBodies = blocks.length === 0 ? [content] : blocks.filter(blockIsTextBearing).map((b) => b.body);
+  for (const body of scanBodies) {
+    FONT_WEIGHT_RE.lastIndex = 0;
+    let m;
+    while ((m = FONT_WEIGHT_RE.exec(body)) !== null) {
+      const value = (m[1] ?? "").toLowerCase();
+      let canonical;
+      if (value === "normal") canonical = "400";
+      else if (value === "bold") canonical = "700";
+      else canonical = value;
+      distinctValues.add(canonical);
+      occurrenceCount += 1;
+      if (distinctValues.size >= 2) return null;
+    }
+  }
+  if (distinctValues.size === 1 && occurrenceCount >= MIN_SINGLE_WEIGHT_OCCURRENCES) {
     const rule = RULES_BY_ID.get("single-weight-typography");
     if (rule === void 0) return null;
     return {
@@ -275,20 +476,32 @@ function analyseFontWeights(content) {
       severity: rule.severity,
       message: rule.message,
       suggestedFix: rule.suggestedFix,
-      location: { cssSnippet: `font-weight: ${Array.from(found)[0] ?? ""}` }
+      location: { cssSnippet: `font-weight: ${Array.from(distinctValues)[0] ?? ""}` }
     };
   }
   return null;
 }
 async function runAntiSlop(css, ctx) {
   const startedAt = Date.now();
+  const budgetMs = ctx?.budgetMs ?? ANTI_SLOP_LINTER_BUDGET_MS;
   const violations = [];
+  const aggCtx = {
+    brandColors: ctx?.brandColors ?? /* @__PURE__ */ new Set()
+  };
+  let parkedDefaultBlueClassHits = [];
+  const tailwindBudgetOkUp = ctx?.budgetStartedAt === void 0 || Date.now() - ctx.budgetStartedAt <= budgetMs;
+  if (tailwindBudgetOkUp) {
+    const sourceForClassScan = ctx?.rawSource ?? css;
+    const tw = runTailwindClassMatchers(sourceForClassScan, aggCtx);
+    for (const v of tw.violations) violations.push(v);
+    parkedDefaultBlueClassHits = tw.defaultBlueClassHits;
+  }
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;
     if (rule.aggregator !== void 0) {
-      const aggregated = rule.aggregator(css);
+      const aggregated = rule.id === "default-tailwind-blue" ? aggregateDefaultTailwindBlue(css, aggCtx, parkedDefaultBlueClassHits) : rule.aggregator(css, aggCtx);
       for (const v of aggregated) violations.push(v);
-      if (ctx?.budgetStartedAt !== void 0 && Date.now() - ctx.budgetStartedAt > ANTI_SLOP_LINTER_BUDGET_MS) {
+      if (ctx?.budgetStartedAt !== void 0 && Date.now() - ctx.budgetStartedAt > budgetMs) {
         break;
       }
       continue;
@@ -313,7 +526,7 @@ async function runAntiSlop(css, ctx) {
       if (matchCount >= 10) break;
       if (match.index === re.lastIndex) re.lastIndex += 1;
     }
-    if (ctx?.budgetStartedAt !== void 0 && Date.now() - ctx.budgetStartedAt > ANTI_SLOP_LINTER_BUDGET_MS) {
+    if (ctx?.budgetStartedAt !== void 0 && Date.now() - ctx.budgetStartedAt > budgetMs) {
       break;
     }
   }
@@ -357,11 +570,43 @@ function extractCssFromFile(filePath, content) {
   }
   return content;
 }
+async function loadBrandColors(projectRoot) {
+  const out = /* @__PURE__ */ new Set();
+  try {
+    const path = join(projectRoot, ".wisp", "brand-spec.json");
+    const raw = await fs.readFile(path, "utf8");
+    const json = JSON.parse(raw);
+    let arr = void 0;
+    let primary = void 0;
+    let accent = void 0;
+    if (json !== null && typeof json === "object") {
+      const j = json;
+      const brand = j["brand"];
+      if (brand !== void 0 && typeof brand === "object" && brand !== null) {
+        const b = brand;
+        arr = b["colors"];
+        primary = b["primary"];
+        accent = b["accent"];
+      }
+      if (arr === void 0) arr = j["colors"];
+    }
+    if (Array.isArray(arr)) {
+      for (const v of arr) {
+        if (typeof v === "string") out.add(v.toLowerCase().trim());
+      }
+    }
+    if (typeof primary === "string") out.add(primary.toLowerCase().trim());
+    if (typeof accent === "string") out.add(accent.toLowerCase().trim());
+  } catch {
+  }
+  return out;
+}
 async function runAntiSlopOnFiles(files, opts) {
   const startedAt = Date.now();
   const budgetBase = opts.budgetStartedAt ?? startedAt;
   const budgetMs = opts.perCallBudgetMs ?? ANTI_SLOP_LINTER_BUDGET_MS;
   const violations = [];
+  const brandColors = opts.brandColors ?? await loadBrandColors(opts.projectRoot);
   for (const filePath of files) {
     const ext = extname(filePath).toLowerCase();
     if (!UI_EXTENSIONS.has(ext)) continue;
@@ -375,7 +620,13 @@ async function runAntiSlopOnFiles(files, opts) {
     const css = extractCssFromFile(filePath, content);
     const result = await runAntiSlop(css, {
       mode: opts.mode,
-      budgetStartedAt: budgetBase
+      budgetStartedAt: budgetBase,
+      rawSource: content,
+      brandColors,
+      // Phase-7.12 — propagate the per-call budget so inner rule-loop and
+      // tailwind-scanner don't truncate against the 50ms stop-hook ceiling
+      // when called from audit modes.
+      budgetMs
     });
     if (result.violations !== void 0) {
       const rawAnti = result.violations;
@@ -432,24 +683,31 @@ function formatWarnMessage(hits) {
   }
   return [head, ...lines].join("\n");
 }
-var ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, RULES, RULES_BY_ID, FONT_WEIGHT_RE, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
+var CLASS_ATTR_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
 var init_anti_slop_linter = __esm({
   "src/verify/anti-slop-linter.ts"() {
     "use strict";
     init_verify();
+    CLASS_ATTR_RE = /\b(?:className|class)\s*=\s*"([^"]*)"/g;
     ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
     ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
     ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
     ANY_SPACING_DECL_RE = /(padding|margin|gap)\s*:\s*(\d+)px(?![0-9])/g;
+    DEFAULT_BLUE_CSS_RE = /(color|background-color|border-color|fill|stroke)\s*:\s*(#3b82f6|rgb\(\s*59\s*,\s*130\s*,\s*246\s*\)|var\(--tw-blue-500\)|var\(--color-blue-500\))/gi;
+    DEFAULT_BLUE_TW_CLASS_RE = /\b(bg|text|border)-blue-(500|600|700)\b/;
+    DEFAULT_BLUE_MIN_OCCURRENCES = 2;
     RULES = [
       // ── Hard-bans ────────────────────────────────────────────────────────────
       {
         id: "em-dash-ui",
         severity: "fail",
-        // `—` or `–` inside a quoted CSS `content:` string, or inside JSX text
-        // adjacent to a button/heading. Cheapest detection: any em-dash in a
-        // string literal at all — UI code rarely embeds em-dashes legitimately.
-        pattern: /(content\s*:\s*['"][^'"]*[—–][^'"]*['"])|(>\s*[^<\n]*[—–][^<\n]*<\s*\/(button|h[1-6]|label|a)\b)/gi,
+        // T1 (2026-05-24): broadened element scope to button|h1-6|label|a|p|span
+        // (UI copy lives in p/span too) and allowed multi-line text content via
+        // `[^<]*?` (was `[^<\n]*` which excluded newlines — caused the canonical
+        // sample/index.html line 129 FN where `<h3 class="...">\n  10x...velocity—instantly\n</h3>`
+        // spans multiple lines). `[^<]` still blocks bridging across tag boundaries.
+        // Em-dash can appear anywhere mid-text now, not only at start/end.
+        pattern: /(content\s*:\s*['"][^'"]*[—–][^'"]*['"])|(>[^<]*?[—–][^<]*?<\s*\/(button|h[1-6]|label|a|p|span)\b)/gi,
         message: "em-dash in UI text \u2014 reads as docs-prose, not interface copy.",
         suggestedFix: "Replace with explicit punctuation, comma, or line break."
       },
@@ -495,9 +753,16 @@ var init_anti_slop_linter = __esm({
         id: "purple-blue-gradient",
         severity: "fail",
         // linear-gradient containing BOTH a purple-ish stop AND a blue-ish stop.
-        // Catches the most common AI vibe; we lean on the named-colour set + the
-        // canonical Tailwind hexes.
-        pattern: /linear-gradient\([^)]*(?:#5b21b6|#6d28d9|#7c3aed|#8b5cf6|#a855f7|#c084fc|purple|violet)[^)]*(?:#1d4ed8|#2563eb|#3b82f6|#60a5fa|#93c5fd|blue|indigo)[^)]*\)/gi,
+        // Two alternations:
+        //   (a) Hex/named-colour list — Tailwind v3 + CSS named colours.
+        //   (b) [T3, 2026-05-24] OKLch colour-space with hue in 270-300deg (purple)
+        //       co-occurring with hue in 240-265deg (blue). Tailwind v4 / Radix
+        //       palettes emit oklch() so the hex-only path would miss them.
+        //       Pattern is intentionally permissive: any `linear-gradient(...)`
+        //       containing one purple-hue oklch and one blue-hue oklch, in either
+        //       order. `(?:2[7-9]\d|300)` covers 270-300; `(?:24\d|25\d|26[0-5])`
+        //       covers 240-265.
+        pattern: /linear-gradient\([^)]*(?:(?:#5b21b6|#6d28d9|#7c3aed|#8b5cf6|#a855f7|#c084fc|purple|violet)[^)]*(?:#1d4ed8|#2563eb|#3b82f6|#60a5fa|#93c5fd|blue|indigo)|(?:#1d4ed8|#2563eb|#3b82f6|#60a5fa|#93c5fd|blue|indigo)[^)]*(?:#5b21b6|#6d28d9|#7c3aed|#8b5cf6|#a855f7|#c084fc|purple|violet)|oklch\([^)]*?(?:2[7-9]\d|300)(?:\.\d+)?(?:deg)?[^)]*?\)[^)]*?oklch\([^)]*?(?:24\d|25\d|26[0-5])(?:\.\d+)?(?:deg)?[^)]*?\)|oklch\([^)]*?(?:24\d|25\d|26[0-5])(?:\.\d+)?(?:deg)?[^)]*?\)[^)]*?oklch\([^)]*?(?:2[7-9]\d|300)(?:\.\d+)?(?:deg)?[^)]*?\))[^)]*\)/gi,
         message: "purple\u2192blue gradient \u2014 generic AI brand vibe.",
         suggestedFix: "Modulate lightness within one hue, or use the project palette colours from `.wisp/brand-spec.json`."
       },
@@ -534,9 +799,23 @@ var init_anti_slop_linter = __esm({
       {
         id: "default-tailwind-blue",
         severity: "warn",
-        pattern: /color\s*:\s*(#3b82f6|rgb\(\s*59\s*,\s*130\s*,\s*246\s*\)|var\(--tw-blue-500\)|var\(--color-blue-500\))/g,
+        // T5 (2026-05-24): extended scope.
+        //   (a) property set: color | background-color | border-color | fill | stroke
+        //       (was: color only; `background-color` was matched incidentally via
+        //       substring of `color:` — explicit list is clearer and adds the
+        //       fill/stroke FN).
+        //   (b) brand-color whitelist: when `.wisp/brand-spec.json` is present
+        //       and the offending colour matches any entry in `brand.colors`,
+        //       the rule is skipped. Implemented via `aggregator` so the runner
+        //       can pass the pre-loaded brand-color set in via closure.
+        //   (c) Tailwind utility classes `(bg|text|border)-blue-{500..700}` —
+        //       scanned in the className matcher pass, not here.
+        // The exported `pattern` stays for tests that introspect it; the
+        // RUNNER invokes `aggregator` which does the brand-whitelist filtering.
+        pattern: /(color|background-color|border-color|fill|stroke)\s*:\s*(#3b82f6|rgb\(\s*59\s*,\s*130\s*,\s*246\s*\)|var\(--tw-blue-500\)|var\(--color-blue-500\))/gi,
         message: "default Tailwind blue (#3b82f6) used directly \u2014 single most over-used AI brand colour.",
-        suggestedFix: "Use a project-defined accent OKLch with stated chroma, or pull from `.wisp/brand-spec.json`."
+        suggestedFix: "Use a project-defined accent OKLch with stated chroma, or pull from `.wisp/brand-spec.json`.",
+        aggregator: aggregateDefaultTailwindBlue
       },
       // single-weight-typography is handled separately by `analyseFontWeights`
       // (counting distinct values across the file is a state-ful scan, not a
@@ -563,7 +842,11 @@ var init_anti_slop_linter = __esm({
     RULES_BY_ID = new Map(
       RULES.map((r) => [r.id, r])
     );
+    TEXT_TAG_RE = /(^|[\s,>+~])(h[1-6]|p|span|a|button|label|li|blockquote|code|td|th|strong|em|small|figcaption|caption)\b/;
+    TEXT_DECL_RE = /(?:^|[\s;{])(font-family|font-size|line-height|letter-spacing|color|text-[a-z-]+)\s*:/i;
+    ICON_HINT_RE = /\.(icon|sr-only|visually-hidden|svg|chev|caret|spinner)\b|\[aria-hidden\b/;
     FONT_WEIGHT_RE = /font-weight\s*:\s*([1-9]\d{2}|normal|bold|lighter|bolder)/gi;
+    MIN_SINGLE_WEIGHT_OCCURRENCES = 2;
     STYLE_BLOCK_RE = /<style[^>]*>([\s\S]*?)<\/style>/gi;
     JSX_INLINE_STYLE_RE = /\bstyle\s*=\s*\{\{([\s\S]*?)\}\}/g;
     INLINE_STYLE_ATTR_RE = /\bstyle\s*=\s*"([^"]*)"/g;
@@ -820,7 +1103,11 @@ __export(a11y_axe_exports, {
 });
 async function loadAxe() {
   try {
-    return await import("axe-core");
+    const mod = await import("axe-core");
+    if (mod.default !== void 0 && typeof mod.default.run === "function") {
+      return mod.default;
+    }
+    return mod;
   } catch {
     return null;
   }
@@ -862,17 +1149,22 @@ function mapAxeViolation(v) {
     const selector = n.target.length === 0 ? "" : Array.isArray(n.target[0]) ? n.target[0].join(" >>> ") : n.target[0];
     return n.html !== void 0 ? { selector, html: n.html } : { selector };
   });
+  const vUnknown = v;
+  const baseHelp = typeof vUnknown.help === "string" ? vUnknown.help : v.id;
+  const firstSelector = nodes.length > 0 ? nodes[0]?.selector ?? "" : "";
+  const message = firstSelector !== "" ? `${baseHelp} (${firstSelector}${nodes.length > 1 ? ` +${nodes.length - 1} more` : ""})` : baseHelp;
   const out = {
     ruleId: v.id,
     impact,
     level,
     severity,
-    nodes
+    nodes,
+    message
   };
   if (v.helpUrl !== void 0) out.helpUrl = v.helpUrl;
   return out;
 }
-async function tryLoadSandbox() {
+async function loadSandbox() {
   try {
     return await Promise.resolve().then(() => (init_sandbox(), sandbox_exports));
   } catch {
@@ -880,21 +1172,25 @@ async function tryLoadSandbox() {
   }
 }
 async function runViaPlaywright(livePreviewUrl, axe) {
-  const pw = await loadPlaywright();
-  if (pw === null) {
-    throw new Error("playwright not available");
+  const sandbox = await loadSandbox();
+  if (sandbox === null) {
+    throw new Error("sandbox not available");
   }
-  const u = new URL(livePreviewUrl);
-  if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
-    throw new Error(`a11y-axe refuses non-localhost URL: ${livePreviewUrl}`);
-  }
-  const sandbox = await tryLoadSandbox();
-  if (sandbox !== null) {
-    const { browser: browser2, page } = await sandbox.safeBrowserLaunch(livePreviewUrl);
+  const handle = await sandbox.safeBrowserLaunch({
+    livePreviewUrl,
+    budgetMs: A11Y_AXE_BUDGET_MS
+  });
+  try {
+    const page = await handle.newPage();
     try {
-      const p = page;
-      await p.addScriptTag({ content: axe.source });
-      const results = await p.evaluate(async () => {
+      await page.goto(livePreviewUrl, {
+        timeout: A11Y_AXE_BUDGET_MS,
+        waitUntil: "domcontentloaded"
+      });
+      await page.addScriptTag({
+        content: axe.source
+      });
+      const results = await page.evaluate(async () => {
         const a = globalThis.axe;
         return a.run(document, {
           runOnly: {
@@ -909,35 +1205,13 @@ async function runViaPlaywright(livePreviewUrl, axe) {
       return results.violations.map(mapAxeViolation);
     } finally {
       try {
-        await browser2.close();
+        await page.close();
       } catch {
       }
     }
-  }
-  const browser = await pw.chromium.launch({
-    headless: true,
-    args: ["--disable-extensions", "--no-default-browser-check", "--no-first-run"]
-  });
-  try {
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    await page.goto(livePreviewUrl, { timeout: 5e3, waitUntil: "networkidle" });
-    await page.addScriptTag({
-      content: axe.source
-    });
-    const results = await page.evaluate(async () => {
-      const a = globalThis.axe;
-      return a.run(document, {
-        runOnly: {
-          type: "tag",
-          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]
-        }
-      });
-    });
-    return results.violations.map(mapAxeViolation);
   } finally {
     try {
-      await browser.close();
+      await handle.close();
     } catch {
     }
   }
@@ -951,17 +1225,39 @@ async function runViaJsdom(html, axe) {
     // Don't run scripts — axe is injected manually and we don't want
     // arbitrary author JS to execute.
     runScripts: "outside-only",
-    pretendToBeVisual: true
+    pretendToBeVisual: true,
+    // Suppress jsdom console noise (resource-load warnings etc.) so they
+    // don't leak into the wisp-design audit output.
+    virtualConsole: new jsdomMod.VirtualConsole()
+    // Default `resources` (undefined) means jsdom does NOT fetch external
+    // resources — <link href="cdn.tailwind..."> is silently ignored. This is
+    // what we want: no network I/O, no timeout hanging on CDN fetches.
   });
   const win = dom.window;
-  const savedWindow = globalThis.window;
-  const savedDocument = globalThis.document;
-  const savedNavigator = globalThis.navigator;
-  globalThis.window = win;
-  globalThis.document = win.document;
-  globalThis.navigator = win.navigator;
+  const spliceGlobal = (key, value) => {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, key);
+    const prev = desc !== void 0 && "value" in desc ? desc.value : globalThis[key];
+    Object.defineProperty(globalThis, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: true
+    });
+    return prev;
+  };
+  const restoreGlobal = (key, value) => {
+    Object.defineProperty(globalThis, key, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: true
+    });
+  };
+  const savedWindow = spliceGlobal("window", win);
+  const savedDocument = spliceGlobal("document", win.document);
+  const savedNavigator = spliceGlobal("navigator", win.navigator);
   try {
-    const results = await axe.run(win.document, {
+    const results = await axe.run(win.document.documentElement, {
       runOnly: {
         type: "tag",
         values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]
@@ -969,9 +1265,9 @@ async function runViaJsdom(html, axe) {
     });
     return results.violations.map(mapAxeViolation);
   } finally {
-    globalThis.window = savedWindow;
-    globalThis.document = savedDocument;
-    globalThis.navigator = savedNavigator;
+    restoreGlobal("window", savedWindow);
+    restoreGlobal("document", savedDocument);
+    restoreGlobal("navigator", savedNavigator);
     try {
       dom.window.close();
     } catch {
@@ -984,7 +1280,7 @@ async function runA11yAxe(opts) {
   if (axe === null) {
     return {
       name: "a11y-axe",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: { reason: "error", detail: "axe-core import failed" }
     };
@@ -1013,14 +1309,12 @@ async function runA11yAxe(opts) {
     } else {
       return {
         name: "a11y-axe",
-        severity: "pass",
+        severity: "warn",
         durationMs: Date.now() - startedAt,
         skipped: { reason: "error", detail: "neither html nor livePreviewUrl supplied" }
       };
     }
     const durationMs = Date.now() - startedAt;
-    if (durationMs > A11Y_AXE_BUDGET_MS) {
-    }
     const severity = violations.some((v) => v.severity === "fail") ? "fail" : violations.some((v) => v.severity === "warn") ? "warn" : "pass";
     return {
       name: "a11y-axe",
@@ -1031,7 +1325,7 @@ async function runA11yAxe(opts) {
   } catch (err) {
     return {
       name: "a11y-axe",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -1202,6 +1496,9 @@ async function loadJsdom2() {
     return null;
   }
 }
+function mkTabViolation(kind, selector, message) {
+  return { kind, selector, detail: message, message };
+}
 function detectNonzeroTabindex(doc) {
   const out = [];
   const elements = doc.querySelectorAll("[tabindex]");
@@ -1210,11 +1507,14 @@ function detectNonzeroTabindex(doc) {
     if (raw === null) return;
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return;
-    out.push({
-      kind: "nonzero-tabindex",
-      selector: cssPathFor(el),
-      detail: `tabindex=${raw} on <${el.tagName.toLowerCase()}>`
-    });
+    const sel = cssPathFor(el);
+    out.push(
+      mkTabViolation(
+        "nonzero-tabindex",
+        sel,
+        `${sel} has tabindex=${raw} (positive) \u2014 disrupts natural tab order; use tabindex="0" or remove`
+      )
+    );
   });
   return out;
 }
@@ -1230,11 +1530,14 @@ function detectMissingFocusRing(doc) {
   const elements = doc.querySelectorAll(INTERACTIVE_SELECTORS.join(","));
   elements.forEach((el) => {
     if (hasFocusVisibleRule) return;
-    out.push({
-      kind: "missing-focus-ring",
-      selector: cssPathFor(el),
-      detail: "no :focus or :focus-visible rule found in the page stylesheets"
-    });
+    const sel = cssPathFor(el);
+    out.push(
+      mkTabViolation(
+        "missing-focus-ring",
+        sel,
+        `${sel} has no :focus or :focus-visible rule \u2014 keyboard users will see no focus indicator`
+      )
+    );
   });
   return out.slice(0, 10);
 }
@@ -1265,11 +1568,15 @@ function detectFocusTrapLeak(doc) {
       if (!hidden) leaks.push(el);
     });
     if (leaks.length > 0) {
-      out.push({
-        kind: "focus-trap-leak",
-        selector: cssPathFor(dialog),
-        detail: `${leaks.length} focusable element${leaks.length > 1 ? "s" : ""} reachable outside the open modal`
-      });
+      const sel = cssPathFor(dialog);
+      const n = leaks.length;
+      out.push(
+        mkTabViolation(
+          "focus-trap-leak",
+          sel,
+          `${sel} is an open modal but ${n} focusable element${n > 1 ? "s are" : " is"} reachable outside \u2014 tab focus escapes the trap`
+        )
+      );
     }
   }
   return out;
@@ -1290,7 +1597,7 @@ async function runTabOrder(opts) {
   if (jsdomMod === null) {
     return {
       name: "tab-order",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -1324,7 +1631,7 @@ async function runTabOrder(opts) {
   } catch (err) {
     return {
       name: "tab-order",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -1440,7 +1747,7 @@ __export(multi_viewport_exports, {
   runMultiViewport: () => runMultiViewport
 });
 import { promises as fs3 } from "fs";
-import { dirname, join, resolve } from "path";
+import { dirname, join as join2, resolve } from "path";
 async function loadPlaywright2() {
   try {
     const m = await import("playwright");
@@ -1460,7 +1767,7 @@ async function chromiumInstalled(pw) {
     return false;
   }
 }
-async function loadSandbox() {
+async function loadSandbox2() {
   try {
     return await Promise.resolve().then(() => (init_sandbox(), sandbox_exports));
   } catch {
@@ -1521,7 +1828,7 @@ async function runMultiViewport(opts) {
   } catch (err) {
     return {
       name: "multi-viewport",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -1529,7 +1836,7 @@ async function runMultiViewport(opts) {
       }
     };
   }
-  const sandbox = await loadSandbox();
+  const sandbox = await loadSandbox2();
   let browser = null;
   let context = null;
   try {
@@ -1557,7 +1864,7 @@ async function runMultiViewport(opts) {
         for (const scheme of DEFAULT_COLOR_SCHEMES) {
           if (Date.now() - budgetBase > MULTI_VIEWPORT_BUDGET_MS - 400) break;
           await page.emulateMedia({ colorScheme: scheme });
-          const outPath = join(dest, `${vp.label}.${scheme}.png`);
+          const outPath = join2(dest, `${vp.label}.${scheme}.png`);
           await fs3.mkdir(dirname(outPath), { recursive: true });
           await page.screenshot({ path: outPath, fullPage: false });
           screenshots.push({
@@ -1585,7 +1892,7 @@ async function runMultiViewport(opts) {
   } catch (err) {
     return {
       name: "multi-viewport",
-      severity: "pass",
+      severity: "warn",
       durationMs: Date.now() - startedAt,
       skipped: {
         reason: "error",
@@ -1616,6 +1923,16 @@ var init_multi_viewport = __esm({
 
 // src/verify/gate.ts
 init_verify();
+var MODE_CHECK_BUDGET_MULTIPLIER = {
+  "stop-hook": 1,
+  "live-accept": 3,
+  "live-with-screenshot": 3,
+  audit: 100,
+  "audit-strict": 100
+};
+function budgetForCheck(name, mode) {
+  return CHECK_BUDGET_MS[name] * MODE_CHECK_BUDGET_MULTIPLIER[mode];
+}
 function runWithTimeout(name, work, budgetMs) {
   return new Promise((resolveOuter) => {
     let settled = false;
@@ -1624,7 +1941,7 @@ function runWithTimeout(name, work, budgetMs) {
       settled = true;
       resolveOuter({
         name,
-        severity: "pass",
+        severity: "warn",
         durationMs: budgetMs,
         skipped: { reason: "timeout", detail: `> ${budgetMs}ms` }
       });
@@ -1642,7 +1959,7 @@ function runWithTimeout(name, work, budgetMs) {
         clearTimeout(timer);
         resolveOuter({
           name,
-          severity: "pass",
+          severity: "warn",
           durationMs: 0,
           skipped: {
             reason: "error",
@@ -1664,8 +1981,9 @@ async function dispatchCheck(name, ctx) {
           mode: ctx.mode,
           projectRoot: ctx.projectRoot,
           budgetStartedAt,
-          perCallBudgetMs: CHECK_BUDGET_MS["anti-slop"] * 10
-          // audit budget
+          // Inner per-call budget MUST match the outer runWithTimeout budget
+          // (set in run() via budgetForCheck). Both scale by mode multiplier.
+          perCallBudgetMs: budgetForCheck("anti-slop", ctx.mode)
         });
       }
       return runAntiSlop2(cssSource, { mode: ctx.mode, budgetStartedAt });
@@ -1707,7 +2025,7 @@ async function dispatchCheck(name, ctx) {
       if (ctx.livePreviewUrl === void 0 || ctx.sessionId === void 0 || ctx.variantId === void 0) {
         return {
           name: "multi-viewport",
-          severity: "pass",
+          severity: "warn",
           durationMs: Date.now() - budgetStartedAt,
           skipped: {
             reason: "error",
@@ -1740,14 +2058,14 @@ async function run(ctx) {
   const checks = MODE_CHECK_SETS[mode];
   const budgetMs = MODE_TIMING_BUDGET_MS[mode];
   const promises = checks.map(
-    (name) => runWithTimeout(name, dispatchCheck(name, ctx), CHECK_BUDGET_MS[name])
+    (name) => runWithTimeout(name, dispatchCheck(name, ctx), budgetForCheck(name, mode))
   );
   const settled = await Promise.allSettled(promises);
   const resolved = settled.map((s, i) => {
     if (s.status === "fulfilled") return s.value;
     return {
       name: checks[i] ?? "anti-slop",
-      severity: "pass",
+      severity: "warn",
       durationMs: 0,
       skipped: {
         reason: "error",

@@ -25,10 +25,10 @@ describe("dist/live.js", () => {
   );
 
   it.skipIf(!liveJsExists)(
-    "is under 50_000 bytes (Phase 2 budget)",
+    "is under 75_000 bytes (Phase 7 budget — bumped from 50k after adding tool panels + generating-overlay animation)",
     () => {
       const size = statSync(liveJsPath).size;
-      expect(size).toBeLessThan(50_000);
+      expect(size).toBeLessThan(75_000);
     },
   );
 

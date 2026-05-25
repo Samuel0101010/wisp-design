@@ -33,8 +33,10 @@ function printHelp(): void {
       "",
       "Usage:",
       "  wisp-design doctor [--fix]                Verify manifest, hooks, build (Phase 0 gate)",
-      "  wisp-design live [--port N]               Boot bridge + inject script. (Phase 1+, stub)",
-      "  wisp-design init                          Project setup wizard. (Phase 4, stub)",
+      "  wisp-design live [--target URL] [--port N] [--inject PATH] [--strict] [--verify-mode MODE] [--max-variants N] [--quiet]",
+      "                                            Boot bridge + (optionally) inject live.js + run agent-loop. (Phase 7)",
+      "  wisp-design init [--non-interactive] [--brand-name S] [--primary-color OKLCH] [--style minimalist|expressive|dense]",
+      "                                            Project setup wizard. (Phase 7)",
       "  wisp-design poll-once [--timeout N]       Fetch one batch of bridge events. (Phase 4)",
       "  wisp-design post-event --kind K --payload <json>  Push event to bridge. (Phase 4)",
       "  wisp-design skills <index|search> [args]  Index/query skills corpus. (Phase 4)",
@@ -101,8 +103,6 @@ async function main(): Promise<number> {
     return runHook(rest[0]);
   }
 
-  if (cmd === "live") return notImplemented("live", "1-4");
-  if (cmd === "init") return notImplemented("init", "4");
   if (cmd === "tokens") return notImplemented("tokens", "4");
   if (cmd === "verify-spec") return notImplemented("verify-spec", "5");
 
@@ -177,6 +177,16 @@ async function main(): Promise<number> {
   if (cmd === "policy") {
     const mod = await lazyLoad("./agent/policy.js");
     return callRunner(mod, "runPolicy", rest, "policy", "6");
+  }
+  // Phase 7 — `live` and `init`. Same lazy-load pattern. Contract surface
+  // lives in `src/contracts/live.ts` and `src/contracts/init.ts`.
+  if (cmd === "live") {
+    const mod = await lazyLoad("./agent/live.js");
+    return callRunner(mod, "runLive", rest, "live", "7");
+  }
+  if (cmd === "init") {
+    const mod = await lazyLoad("./agent/init.js");
+    return callRunner(mod, "runInit", rest, "init", "7");
   }
 
   process.stderr.write(`wisp-design: unknown command "${cmd}". Try --help.\n`);

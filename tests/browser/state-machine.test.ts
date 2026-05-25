@@ -208,8 +208,10 @@ describe("createStateMachine — subscribe", () => {
 });
 
 describe("STATE_TRANSITIONS table — coverage", () => {
-  it("contains 18 edges", () => {
-    expect(STATE_TRANSITIONS).toHaveLength(18);
+  it("contains 19 edges", () => {
+    // Phase 7.8 — added cycling → cycling on `generate-variants-arrived` so
+    // the late-arriving real-agent variants can replace the placeholder.
+    expect(STATE_TRANSITIONS).toHaveLength(19);
   });
 
   it("isValidTransition agrees with every table row", () => {

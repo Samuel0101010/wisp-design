@@ -1,0 +1,41 @@
+/* wisp-design sample — extra CSS file so the anti-slop linter has a
+   non-HTML surface to scan during the audit demo. The hero section's
+   purple→blue gradient is also expressed here in raw CSS so the linter's
+   regex coverage of both Tailwind utility-classes AND raw CSS properties
+   gets exercised. */
+
+@layer base {
+  body {
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+/* Deliberate slop in raw CSS — linter should fire on these. */
+.hero-headline {
+  background: linear-gradient(to right, #a855f7, #3b82f6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.glass-card {
+  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.side-stripe {
+  border-left: 4px solid hsl(220 80% 50%);
+  padding-left: 1rem;
+}
+
+/* Clean utilities — should NOT trigger the linter. */
+.muted {
+  color: rgb(115 115 115);
+}
+
+.surface-card {
+  background: white;
+  border: 1px solid rgb(229 229 229);
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}

@@ -84,7 +84,7 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 **Phase-4 deferred items (Phase 7 launch prep):**
 - Full UI-UX-Pro-Max 14-CSV fork with AgentDB HNSW indexing (Phase 4 ships INDEX + 1 sample)
 - Full Huashu 20+ directions content fork (Phase 4 ships INDEX with synthesized 25-direction list — Phase 7 reconciles with upstream)
-- Real AgentDB pattern-store wiring for indexSkills/searchSkills (Phase 4 uses in-process BM25-lite, marked `agentDbController: "phase-4-stub"`)
+- AgentDB pattern-store wiring is **opt-in** for `indexSkills/searchSkills`, not Phase-7-blocking. Production-default = in-process BM25-lite + length-norm with stopword filtering, stem-truncation (6 chars), and field-boosting (description/title ×2 over body). AgentDB-HNSW is reachable only from the MCP-aware agent loop, not the spawned CLI process (the CLI has no MCP transport). The `agentDbController: "phase-4-stub"` string is a stable opaque controller key, NOT a placeholder waiting to be swapped. See `docs/skills-index.md` for the full rationale.
 
 ### Phase 5 — Verification-Gate (USP)
 

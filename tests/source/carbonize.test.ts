@@ -252,6 +252,138 @@ describe("carbonize — throws on malformed", () => {
   });
 });
 
+describe("carbonize — redundant picked-tag strip (Phase 7.11)", () => {
+  // Variants are authored against the live preview where the picked element
+  // sits inside a `[data-wisp-variant="N"]` wrapper, so :scope = wrapper and
+  // `:scope > <picked-tag>` = the picked element. After carbonize the wrapper
+  // is gone and :scope IS the picked-element selector; without this fix
+  // `:scope > article` would emit `article.x > article` (a non-existent
+  // nested article) and the variant would have no visible effect.
+  const ARTICLE_SCOPE = "article.bg-white.border.border-neutral-200";
+
+  it("strips redundant picked-tag for `:scope > <pickedTag>`", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope > article { transition: transform 0.3s; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} {`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} > article`);
+    expect(out).toContain("transition: transform 0.3s");
+  });
+
+  it("strips redundant picked-tag for `:scope > <pickedTag>:hover`", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope > article:hover { transform: translateY(-6px); }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE}:hover`);
+    expect(out).not.toContain("> article:hover");
+  });
+
+  it("strips redundant picked-tag in deeper chains", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope > article > ul > li:nth-child(1) { transform: translateX(4px); }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} > ul > li:nth-child(1)`);
+    expect(out).not.toContain("> article >");
+  });
+
+  it("preserves non-matching child tag", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope > section > p { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} > section > p`);
+  });
+
+  it("longer-tag false-match is rejected (article vs articles)", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope > articles { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    // `articles` is not `article` — must NOT collapse.
+    expect(out).toContain(`${ARTICLE_SCOPE} > articles`);
+  });
+
+  it("attribute-only scopeSelector skips the strip path (no tag)", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope > article { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: '[data-wisp-target="t1"]',
+    });
+    // Falls through to default rewrite: `> article` stays attached.
+    expect(out).toContain('[data-wisp-target="t1"] > article');
+  });
+});
+
+describe("carbonize — phase-7.11 production fixture lock", () => {
+  // Locked from sample/index.html lines 29-90 — the v2 hover-physics variant
+  // that proved Phase-7.11 redundant-tag stripping works in production. The
+  // picked element is `<article class="bg-white border border-neutral-200">`,
+  // so :scope after carbonize IS that article. Without the strip,
+  // `:scope > article` would emit `article.x > article` (nested article that
+  // doesn't exist) and the variant would have no visible effect.
+  const ARTICLE_SCOPE = "article.bg-white.border.border-neutral-200";
+
+  it("carbonizes the v2 hover-physics fixture exactly as ships in sample/index.html", () => {
+    const input =
+      '@scope ([data-wisp-variant="2"]) {\n' +
+      "  :scope > article {\n" +
+      "    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s ease, border-color 0.35s ease;\n" +
+      "    will-change: transform;\n" +
+      "  }\n" +
+      "  :scope > article:hover {\n" +
+      "    transform: translateY(-6px);\n" +
+      "    box-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.10), 0 4px 10px -4px rgba(0, 0, 0, 0.04);\n" +
+      "    border-color: rgb(23, 23, 23);\n" +
+      "  }\n" +
+      "  :scope > article > ul > li {\n" +
+      "    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);\n" +
+      "  }\n" +
+      "  :scope > article:hover > ul > li:nth-child(1) {\n" +
+      "    transform: translateX(4px);\n" +
+      "    transition-delay: 0.04s;\n" +
+      "  }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    // Picked-tag prefix collapses into scopeSelector itself.
+    expect(out).toContain(`${ARTICLE_SCOPE} {`);
+    // Hover state on the picked element (no nested article).
+    expect(out).toContain(`${ARTICLE_SCOPE}:hover {`);
+    // Deeper chain keeps its descendant tail but strips the redundant article.
+    expect(out).toContain(`${ARTICLE_SCOPE} > ul > li`);
+    // The bug we're locking against: must NOT contain `article.x > article`.
+    expect(out).not.toContain(`${ARTICLE_SCOPE} > article`);
+  });
+});
+
 describe("carbonize — multiple @scope blocks (pin actual behavior)", () => {
   it("documented behavior: parses outer rule first, second @scope is consumed inside body or throws", () => {
     // FINDING: With two @scope blocks at the top level the parser sees the

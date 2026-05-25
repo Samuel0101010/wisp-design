@@ -280,6 +280,26 @@ async function logParamChanged(
   );
 }
 
+async function logAnnotationAdded(
+  sessionId: string,
+  evt: { targetId: string; annotationKind: string; note: string },
+  opts: SessionLoggerOptions,
+): Promise<void> {
+  await appendEntry(
+    {
+      ts: nowIso(),
+      sessionId,
+      kind: "annotation-added",
+      detail: {
+        targetId: evt.targetId,
+        annotationKind: evt.annotationKind,
+        note: evt.note,
+      },
+    },
+    opts.projectRoot,
+  );
+}
+
 async function logPolicyProposalShown(
   sessionId: string,
   evt: { axis: string; observation: string; proposed: string; triggerThreshold: number },
@@ -399,6 +419,7 @@ export const sessionLogger: SessionLoggerModule & {
   logConfigure: typeof logConfigure;
   logCycleActiveChanged: typeof logCycleActiveChanged;
   logParamChanged: typeof logParamChanged;
+  logAnnotationAdded: typeof logAnnotationAdded;
   logPolicyProposalShown: typeof logPolicyProposalShown;
   logPolicyProposalAccepted: typeof logPolicyProposalAccepted;
   logPolicyProposalDeclined: typeof logPolicyProposalDeclined;
@@ -430,6 +451,7 @@ export const sessionLogger: SessionLoggerModule & {
   logConfigure,
   logCycleActiveChanged,
   logParamChanged,
+  logAnnotationAdded,
   logPolicyProposalShown,
   logPolicyProposalAccepted,
   logPolicyProposalDeclined,

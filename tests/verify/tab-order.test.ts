@@ -112,3 +112,46 @@ describe("runTabOrder — overall severity", () => {
     expect(res.name).toBe("tab-order");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug #2 fix — violations must have non-empty message fields so the CLI
+// formatter renders meaningful output rather than "tab-order: ".
+// ---------------------------------------------------------------------------
+
+describe("runTabOrder — violation messages are non-empty", () => {
+  it("nonzero-tabindex violation includes selector and value in message", async () => {
+    const res = await runTabOrder({
+      html: pageWith(`<button tabindex="5">Click</button>`, `:focus-visible { outline: 2px solid; }`),
+    });
+    const hit = vs(res).find((v) => v.kind === "nonzero-tabindex") as (TabOrderViolation & { message?: string }) | undefined;
+    expect(hit).toBeDefined();
+    // message must be non-empty and contain the tabindex value
+    expect(hit?.message).toBeDefined();
+    expect(hit!.message!.length).toBeGreaterThan(0);
+    expect(hit!.message).toMatch(/tabindex=5/);
+  });
+
+  it("missing-focus-ring violation has non-empty message", async () => {
+    const res = await runTabOrder({
+      html: pageWith(`<button>X</button>`),
+    });
+    const hit = vs(res).find((v) => v.kind === "missing-focus-ring") as (TabOrderViolation & { message?: string }) | undefined;
+    expect(hit).toBeDefined();
+    expect(hit?.message).toBeDefined();
+    expect(hit!.message!.length).toBeGreaterThan(0);
+  });
+
+  it("focus-trap-leak violation message names the leak count", async () => {
+    const res = await runTabOrder({
+      html: pageWith(
+        `<dialog open aria-modal="true"><button>Inside</button></dialog><button>Outside</button>`,
+      ),
+    });
+    const hit = vs(res).find((v) => v.kind === "focus-trap-leak") as (TabOrderViolation & { message?: string }) | undefined;
+    expect(hit).toBeDefined();
+    expect(hit?.message).toBeDefined();
+    expect(hit!.message!.length).toBeGreaterThan(0);
+    // Message should mention how many elements leak
+    expect(hit!.message).toMatch(/1 focusable/);
+  });
+});
