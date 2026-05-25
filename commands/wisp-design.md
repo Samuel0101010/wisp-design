@@ -26,11 +26,13 @@ Top-level dispatcher für den `wisp-design` Live-Loop. Routet anhand `$ARGUMENTS
 
 ## ⚡ Wenn der User `/wisp-design live` aufruft
 
-**Zwei Modi — primary first:**
+**Zwei Modi — interaktiver Default (du bist der Designer) zuerst, autonom als Opt-in:**
 
 ### Modus A — `--external-agent` (Opus 4.7 in active session, **Primary, Default**)
 
-Die Bridge läuft als Daemon im Hintergrund, **du** (Opus 4.7 im aktiven Chat) bist der Variant-Generator. Jeder `generating`-Event aus dem Browser-Overlay landet als **automatische Chat-Notification** in deinem Turn — ohne dass der User tippen muss. Du designst Varianten, POSTest zurück, Browser rendert. Kein Daemon-Spawn-Claude, keine $-Kosten pro Variant-Set, kein Latenz-Cap.
+Die Bridge läuft als Daemon im Hintergrund und **du** (Opus 4.7 im aktiven Chat) bist der Variant-Generator. Jeder `generating`-Event aus dem Browser-Overlay landet als **automatische Chat-Notification** in deinem Turn — ohne dass der User tippen muss. Du designst die Varianten in dieser Session, POSTest sie zurück, Browser rendert. Kein Subprozess-Spawn, keine zusätzlichen $-Kosten, keine 10–60s Haiku-Latenz, volle Opus-Quality.
+
+**CRITICAL:** Du MUSST sowohl den Daemon (Schritt A1) ALS AUCH den Monitor-Loop (Schritt A2) starten — beides in einem einzigen Turn, BEVOR du dem User antwortest. Wenn der Monitor nicht läuft, sieht der User nichts wenn er klickt. Tier-0-Safety-Net: der Daemon postet within 1s stub-Variants als loading-state — die werden von deinen echten Varianten überschrieben sobald du POSTest.
 
 **Setup (3 Schritte, dann lebt es bis Session-Ende):**
 
@@ -44,7 +46,7 @@ node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" live --external-agent --quiet [user-a
 
 Nach ~1.5s `BashOutput` lesen → `{port, token, bridgeUrl, sessionId}` extrahieren.
 
-**Schritt A2 — Monitor auf SSE** (via `Monitor`-Tool, persistent):
+**Schritt A2 — Monitor auf SSE** (via `Monitor`-Tool, persistent) — **MANDATORY, ohne läuft nichts**:
 
 ```bash
 while true; do
@@ -112,15 +114,15 @@ Helper liest port.lock automatisch, POSTet, validiert Response. Browser SSE rend
 
 ---
 
-### Modus B — `--agent-driven` (Headless Haiku-Daemon, autonomous)
+### Modus B — `--agent-driven` (Headless Haiku-Daemon, Opt-in)
 
-Wenn der User explizit "ich will Daemon-mode, kein interaktives Designen" sagt (oder dieser Chat eine Sub-Session ohne Tool-Access ist):
+Nur wenn der User explizit "ich will Daemon-mode, kein interaktives Designen" sagt (oder wenn diese Session keinen Monitor starten kann):
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" live --agent-driven --quiet
 ```
 
-Daemon spawnt für jeden `generating`-Event ein `claude -p --model haiku` mit minimal system-prompt (~6k token cache, ~$0.04/set, 10–60s Latenz). Du musst NICHT pollen — der Daemon arbeitet autonom. Nur Connection-Info ausgeben und Turn beenden.
+Daemon spawnt für jeden `generating`-Event ein `claude -p --model haiku` (≈6k token cache, ≈$0.04/set, 10–60s Latenz). Du musst NICHT pollen — der Daemon arbeitet autonom. Nur Connection-Info ausgeben und Turn beenden. Quality-Tradeoff: Haiku < Opus-in-Chat.
 
 ---
 

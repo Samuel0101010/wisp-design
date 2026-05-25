@@ -7700,7 +7700,7 @@ async function dispatchEvent(ev, state, flags, cwd) {
         if (flags.externalAgent) {
           if (!flags.quiet) {
             process.stdout.write(
-              `wisp-design live: \u23F8 external-agent mode \u2014 generating event left for active Claude session to poll (freeText="${ev.freeText.slice(0, 60)}\u2026")
+              `wisp-design live: external-agent \u2014 generating event waiting for active Claude session to design variants. freeText="${ev.freeText.slice(0, 60)}\u2026"
 `
             );
           }

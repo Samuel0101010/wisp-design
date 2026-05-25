@@ -317,13 +317,25 @@ export async function dispatchEvent(
         }
 
         // Phase 7.10 — external-agent mode: skip the in-process claude
-        // spawn. Leave the generating event in the queue for an external
-        // poller (active Claude conversation) to handle. We still wrapped
-        // the source block above, so a later accept can splice.
+        // spawn. The active Claude conversation is expected to be subscribed
+        // to SSE and design hand-crafted variants. Phase 7.13: instead of
+        // leaving the event in the queue silently (which made the overlay
+        // appear dead for up to 5min until the browser-side fallback fired),
+        // we ALSO post deterministic stub variants immediately. The active
+        // session can supersede them by POSTing a second `cycling` event —
+        // the browser re-renders on the newer payload. Net effect: the user
+        // sees SOMETHING within ~1s in every case, and Opus-in-chat still
+        // gets to design real variants when present.
+        // Phase 7.13b — external-agent mode keeps the browser in its
+        // `generating` state (spinner over the bar) until the active Claude
+        // session POSTs a real cycling event. Source wrap above is preserved
+        // so accept-splice works later. No fallback variants are emitted —
+        // the user experience is: spinner → silence → real Opus variants
+        // arrive, no [loading…] placeholder confusion.
         if (flags.externalAgent) {
           if (!flags.quiet) {
             process.stdout.write(
-              `wisp-design live: ⏸ external-agent mode — generating event left for active Claude session to poll (freeText="${ev.freeText.slice(0, 60)}…")\n`,
+              `wisp-design live: external-agent — generating event waiting for active Claude session to design variants. freeText="${ev.freeText.slice(0, 60)}…"\n`,
             );
           }
           break;
