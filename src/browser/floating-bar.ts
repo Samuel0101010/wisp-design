@@ -46,6 +46,10 @@ import {
   mountToolPanels,
   type ToolPanelHandle,
 } from "./tool-panels.js";
+import {
+  mountShimmer,
+  type ShimmerHandle,
+} from "./generation-shimmer.js";
 
 const SELECTED_ATTR = "data-wisp-selected";
 const VARIANT_COUNT_CHOICES = [1, 3, 5, 8] as const;
@@ -408,9 +412,46 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     }
   };
 
+  // Phase 7.14 — Track the active shimmer overlay (the animated dashed
+  // border with diagonal sweep mounted OVER the picked element during
+  // `generating` state). closeActiveShimmer is called from every render
+  // that isn't `generating` so the overlay disappears as soon as variants
+  // arrive (cycling) or the user cancels (idle/configuring).
+  let activeShimmer: ShimmerHandle | null = null;
+  const closeActiveShimmer = (): void => {
+    if (activeShimmer !== null) {
+      activeShimmer.unmount();
+      activeShimmer = null;
+    }
+  };
+  // Cache the last configure-targets so renderGenerating (which has no
+  // ctx.targets — only startedAt + count) can resolve the shimmer mount
+  // points. Reset to [] when the bar exits the configure→generate cycle.
+  let lastConfigureTargets: PickResult[] = [];
+
+  // Phase 7.14 — single helper to mount the tool-icon row inside `container`.
+  // Used by every non-picking/generating render so the 5 tool panels
+  // (tokens / audit / recent / settings / about) are reachable mid-flow,
+  // not only on the idle bar. Picking and generating intentionally skip
+  // tool-icons to keep their focus tight (instruction text or spinner).
+  const renderToolRow = (container: HTMLElement): void => {
+    const handle = mountToolPanels({
+      container,
+      ...(opts.bridgeUrl !== undefined ? { bridgeUrl: opts.bridgeUrl } : {}),
+      ...(opts.bridgeToken !== undefined ? { token: opts.bridgeToken } : {}),
+      initialVariantCount: opts.initialVariantCount ?? DEFAULT_VARIANT_COUNT,
+      ...(opts.onVariantCountChange !== undefined
+        ? { onVariantCountChange: opts.onVariantCountChange }
+        : {}),
+    });
+    activeToolPanels = handle;
+  };
+
   const renderIdle = (): void => {
     stopElapsed();
     closeActiveTools();
+    closeActiveShimmer();
+    lastConfigureTargets = [];
     clear(content);
 
     content.appendChild(makeBrand());
@@ -421,19 +462,11 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     row.appendChild(pickBtn);
     content.appendChild(row);
 
-    // Compact tool buttons: tokens / audit / settings / about — each opens
-    // an expandable panel below the bar. Keeps idle-bar minimal while
-    // exposing surface for the design-loop adjacent tools.
-    const toolHandle = mountToolPanels({
-      container: content,
-      ...(opts.bridgeUrl !== undefined ? { bridgeUrl: opts.bridgeUrl } : {}),
-      ...(opts.bridgeToken !== undefined ? { token: opts.bridgeToken } : {}),
-      initialVariantCount: opts.initialVariantCount ?? DEFAULT_VARIANT_COUNT,
-      ...(opts.onVariantCountChange !== undefined
-        ? { onVariantCountChange: opts.onVariantCountChange }
-        : {}),
-    });
-    activeToolPanels = toolHandle;
+    // Compact tool buttons: tokens / audit / recent / settings / about —
+    // each opens an expandable panel below the bar. Renders the same
+    // tool-row helper used in configure + cycling so the 5 panels are
+    // reachable across the design-loop flow, not only on the idle bar.
+    renderToolRow(content);
   };
 
   // -------------------------------------------------------------------------
@@ -443,6 +476,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
   const renderPicking = (): void => {
     stopElapsed();
     closeActiveTools();
+    closeActiveShimmer();
     clear(content);
 
     content.appendChild(makeBrand());
@@ -463,6 +497,10 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
   const renderConfigure = (ctx: ConfigureCtx): void => {
     stopElapsed();
     closeActiveTools();
+    closeActiveShimmer();
+    // Cache the targets so the next renderGenerating can find the elements
+    // to shimmer over. ConfigureCtx is the last state that carries them.
+    lastConfigureTargets = ctx.targets;
     clear(content);
 
     content.appendChild(makeBrand());
@@ -579,6 +617,11 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
 
     content.appendChild(controls);
 
+    // Phase 7.14 — expose the 5 tool-icons in configure too. Sits below the
+    // primary actions so it never visually competes with Generate, but the
+    // user can still open tokens/audit/recent/settings/about mid-prompt.
+    renderToolRow(content);
+
     // Focus the textarea so users can type immediately
     window.setTimeout(() => textarea.focus(), 80);
   };
@@ -590,6 +633,19 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
   const renderGenerating = (ctx: GeneratingCtx): void => {
     stopElapsed();
     closeActiveTools();
+    // Mount the generation-shimmer over the picked element(s). If we lost
+    // the configure-targets (state-machine started from a non-configure
+    // state, or this is a re-render), skip silently — the bar's own
+    // spinner is the fallback waiting cue.
+    closeActiveShimmer();
+    if (lastConfigureTargets.length > 0) {
+      activeShimmer = mountShimmer({
+        targets: lastConfigureTargets.map((t) => ({
+          selector: t.selector,
+          rect: t.rect,
+        })),
+      });
+    }
     clear(content);
 
     content.appendChild(makeBrand());
@@ -625,6 +681,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
   const renderCycling = (ctx: CycleCtx): void => {
     stopElapsed();
     closeActiveTools();
+    closeActiveShimmer();
     clear(content);
 
     content.appendChild(makeBrand());
@@ -735,6 +792,11 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     hint.textContent = "← → to cycle · 1–8 select · Enter accept · Del discard · ESC cancel";
     content.appendChild(hint);
 
+    // Phase 7.14 — tool-icons in cycle state too. Lets the user open audit
+    // (anti-slop + a11y) on the active variant or peek tokens/recent
+    // without leaving the cycling flow.
+    renderToolRow(content);
+
     // Focus first card
     const firstCard = cardStack.querySelector<HTMLElement>("[data-wisp-variant-card]");
     if (firstCard) window.setTimeout(() => firstCard.focus(), 80);
@@ -844,6 +906,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     teardown(): void {
       stopElapsed();
       closeActiveTools();
+      closeActiveShimmer();
       document.removeEventListener("keydown", handleKeyInternal, true);
       if (container.parentNode) container.parentNode.removeChild(container);
       const styles = document.querySelector(`style[${WISP_UI_DATA_ATTRIBUTE}="bar-styles"]`);

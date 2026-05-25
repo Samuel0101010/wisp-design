@@ -1841,6 +1841,15 @@ function rewriteSingleSelector(sel, scopeSelector) {
     }
   }
   if (sel.startsWith(":scope")) return `${scopeSelector}${sel.slice(":scope".length)}`;
+  if (pickedTag !== null) {
+    const re = new RegExp(`^${pickedTag}(?=\\s|[>+~,]|$)`, "i");
+    const m = sel.match(re);
+    if (m !== null) {
+      const rest = sel.slice(m[0].length);
+      if (rest === "") return scopeSelector;
+      return `${scopeSelector}${rest}`;
+    }
+  }
   return `${scopeSelector} ${sel}`;
 }
 function extractTagFromScopeSelector(scopeSelector) {

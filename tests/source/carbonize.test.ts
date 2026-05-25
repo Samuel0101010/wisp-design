@@ -340,6 +340,127 @@ describe("carbonize — redundant picked-tag strip (Phase 7.11)", () => {
   });
 });
 
+describe("carbonize — bare-picked-tag strip (Phase 7.14)", () => {
+  // Variants authored against the live preview can write `article > header`
+  // (instead of `:scope > article > header`) when the author thinks of the
+  // picked article as the conceptual root. The descendant @scope still
+  // matches in preview because the variant-wrapper's direct child IS the
+  // article. After carbonize, the prepend-with-space rule would emit
+  // `article.x article > header` — a non-existent nested article — so this
+  // strip detects the leading picked-tag + combinator shape and collapses
+  // it into the scope selector directly.
+  const ARTICLE_SCOPE = "article.bg-white.border.border-neutral-200";
+
+  it("strips bare picked-tag prefix with `>` combinator", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article > header > h3 { font-weight: 700; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} > header > h3`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("strips bare picked-tag prefix with descendant combinator", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article header { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} header`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("collapses lone bare picked-tag to the scope itself", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article { padding: 2rem; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} {`);
+    expect(out).toContain("padding: 2rem");
+    // Must NOT produce a doubled article (nested descendant).
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("does NOT strip compound `article.foo` (treats as descendant filter)", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article.foo { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    // Compound is not the picked-element shorthand — author wrote a stricter
+    // descendant filter, keep as-is. Result: `<scope> article.foo` (matches
+    // a nested article with class .foo, which doesn't exist in this DOM but
+    // is the author's literal intent).
+    expect(out).toContain(`${ARTICLE_SCOPE} article.foo`);
+  });
+
+  it("strips bare picked-tag with `+` sibling combinator", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article + section { color: blue; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} + section`);
+  });
+
+  it("longer-tag false-match is rejected (article vs articles) in bare path", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  articles > p { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    // `articles` is a different tag — fall through to safe descendant prepend.
+    expect(out).toContain(`${ARTICLE_SCOPE} articles > p`);
+  });
+
+  it("comma-separated groups each treated independently", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article > h3, article > p { font-weight: 600; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} > h3`);
+    expect(out).toContain(`${ARTICLE_SCOPE} > p`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("attribute-only scopeSelector falls through (no tag to strip)", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article > h3 { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: '[data-wisp-target="t1"]',
+    });
+    // No picked-tag → safe descendant prepend.
+    expect(out).toContain('[data-wisp-target="t1"] article > h3');
+  });
+});
+
 describe("carbonize — phase-7.11 production fixture lock", () => {
   // Locked from sample/index.html lines 29-90 — the v2 hover-physics variant
   // that proved Phase-7.11 redundant-tag stripping works in production. The
