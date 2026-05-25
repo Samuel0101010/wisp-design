@@ -204,9 +204,15 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
     onFreeTextChange: (text) => {
       machine.send("configure-edit-text", { freeText: text });
     },
-    onFreeTextSubmit: (text, count) => {
+    onFreeTextSubmit: (text, count, deviation) => {
       machine.send("configure-edit-text", { freeText: text });
-      machine.send("configure-submit", { requestedVariantCount: count });
+      // Phase 7.15 — thread the boldness/deviation slider value through
+      // so the generating event payload below can carry it to the agent.
+      const submitPayload: { requestedVariantCount: number; deviation?: number } = {
+        requestedVariantCount: count,
+      };
+      if (typeof deviation === "number") submitPayload.deviation = deviation;
+      machine.send("configure-submit", submitPayload);
     },
     onConfigureCancel: () => machine.send("configure-cancel"),
     onGenerateCancel: () => machine.send("generate-cancel"),
@@ -492,6 +498,9 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
             freeText: st.freeText,
             variantCount: st.requestedVariantCount,
             sessionId,
+            // Phase 7.15 — pass deviation so the active Claude session
+            // can scale variant aggressiveness (1 subtle .. 5 radical).
+            ...(typeof st.deviation === "number" ? { deviation: st.deviation } : {}),
           };
           void bridge.postEvent(ev).catch(() => undefined);
         }

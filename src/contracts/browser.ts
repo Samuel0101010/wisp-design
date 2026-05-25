@@ -170,6 +170,8 @@ export type BrowserState =
       targets: PickResult[];
       freeText: string;
       requestedVariantCount: number;
+      /** Phase 7.15 — Deviation (1=subtle, 5=bold). Optional/back-compat. */
+      deviation?: number;
       startedAt: number;
     }
   | {

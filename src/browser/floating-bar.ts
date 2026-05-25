@@ -50,6 +50,13 @@ import {
   mountShimmer,
   type ShimmerHandle,
 } from "./generation-shimmer.js";
+import {
+  DEVIATION_DEFAULT,
+  DEVIATION_MAX,
+  DEVIATION_MIN,
+  readDeviation,
+  writeDeviation,
+} from "./persisted-settings.js";
 
 const SELECTED_ATTR = "data-wisp-selected";
 const VARIANT_COUNT_CHOICES = [1, 3, 5, 8] as const;
@@ -235,6 +242,41 @@ const BAR_STYLES =
     `display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;` +
   `}` +
   // Quick-prompt chips
+  // Deviation slider row (Phase 7.15) — sits between textarea and chips.
+  `[${W}="deviation-row"]{` +
+    `display:flex;align-items:center;gap:8px;margin-top:8px;` +
+    `font-size:11px;color:${C.text500};` +
+  `}` +
+  `[${W}="deviation-label"]{` +
+    `font-weight:500;color:${C.text900};letter-spacing:0.01em;` +
+  `}` +
+  `[${W}="deviation-end"]{font-size:10px;color:${C.text400};letter-spacing:0.03em}` +
+  `[${W}="deviation-value"]{` +
+    `font-variant-numeric:tabular-nums;font-weight:600;color:${C.text900};` +
+    `min-width:14px;text-align:center;` +
+  `}` +
+  `[${W}="deviation-slider"]{` +
+    `flex:1;height:18px;background:transparent;cursor:pointer;` +
+    `-webkit-appearance:none;appearance:none;` +
+  `}` +
+  `[${W}="deviation-slider"]::-webkit-slider-runnable-track{` +
+    `height:3px;background:${C.neutral200};border-radius:999px;` +
+  `}` +
+  `[${W}="deviation-slider"]::-moz-range-track{` +
+    `height:3px;background:${C.neutral200};border-radius:999px;border:none;` +
+  `}` +
+  `[${W}="deviation-slider"]::-webkit-slider-thumb{` +
+    `-webkit-appearance:none;appearance:none;` +
+    `width:14px;height:14px;border-radius:50%;background:${C.neutral900};` +
+    `margin-top:-5px;border:none;cursor:pointer;` +
+    `transition:transform 0.1s ease;` +
+  `}` +
+  `[${W}="deviation-slider"]::-moz-range-thumb{` +
+    `width:14px;height:14px;border-radius:50%;background:${C.neutral900};` +
+    `border:none;cursor:pointer;` +
+  `}` +
+  `[${W}="deviation-slider"]::-webkit-slider-thumb:hover{transform:scale(1.15)}` +
+  `[${W}="deviation-slider"]:focus-visible{outline:${C.outline};outline-offset:4px;border-radius:999px}` +
   `[${W}="chip-row"]{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}` +
   `[${W}="chip"]{` +
     `background:${C.white};border:1px solid ${C.neutral200};border-radius:9999px;` +
@@ -321,7 +363,11 @@ export interface GeneratingCtx {
 export interface FloatingBarOptions {
   sanitize: SanitizeModule;
   onFreeTextChange: (text: string) => void;
-  onFreeTextSubmit: (text: string, variantCount: number) => void;
+  /** Phase 7.15 — `deviation` (1..5) tells the agent how far the variants
+   *  should drift from the original. Optional for back-compat with callers
+   *  that don't read it yet; the generating-event payload simply omits the
+   *  field when undefined. */
+  onFreeTextSubmit: (text: string, variantCount: number, deviation?: number) => void;
   onConfigureCancel: () => void;
   onGenerateCancel: () => void;
   onCycleNext: () => void;
@@ -542,6 +588,43 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     });
     content.appendChild(textarea);
 
+    // Phase 7.15 — Deviation slider. Lets the user dial how far variants
+    // should drift from the original (1 = subtle refinement, 5 = radical
+    // reimagining). Persists via localStorage so the choice survives
+    // reload. The value is read at submit-time and threaded into the
+    // generating event so the agent can scale variant aggressiveness.
+    let currentDeviation = readDeviation(DEVIATION_DEFAULT);
+    const deviationRow = el("div", { [WISP_UI_DATA_ATTRIBUTE]: "deviation-row" });
+    const devLabel = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "deviation-label" });
+    devLabel.textContent = "Boldness";
+    const devLo = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "deviation-end" });
+    devLo.textContent = "subtle";
+    const devSlider = el("input", {
+      [WISP_UI_DATA_ATTRIBUTE]: "deviation-slider",
+      type: "range",
+      min: String(DEVIATION_MIN),
+      max: String(DEVIATION_MAX),
+      step: "1",
+      "aria-label": "How strongly variants should deviate from the original (1 subtle to 5 bold)",
+    }) as HTMLInputElement;
+    devSlider.value = String(currentDeviation);
+    const devHi = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "deviation-end" });
+    devHi.textContent = "bold";
+    const devValue = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "deviation-value" });
+    devValue.textContent = String(currentDeviation);
+    devSlider.addEventListener("input", () => {
+      const n = Math.max(DEVIATION_MIN, Math.min(DEVIATION_MAX, Number(devSlider.value) || DEVIATION_DEFAULT));
+      currentDeviation = n;
+      devValue.textContent = String(n);
+      writeDeviation(n);
+    });
+    deviationRow.appendChild(devLabel);
+    deviationRow.appendChild(devLo);
+    deviationRow.appendChild(devSlider);
+    deviationRow.appendChild(devHi);
+    deviationRow.appendChild(devValue);
+    content.appendChild(deviationRow);
+
     // variantSelect is built first so the quick-prompt chips below can read
     // it at click-time (the chips submit-with-text using the same count as
     // an explicit Generate click).
@@ -571,7 +654,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
         MIN_VARIANT_COUNT,
         MAX_VARIANT_COUNT,
       );
-      opts.onFreeTextSubmit(text, count);
+      opts.onFreeTextSubmit(text, count, currentDeviation);
     };
     // Context-aware chip set — adapts to what the picker actually captured.
     // Picking an h1 shouldn't suggest "rounder" (text isn't a corner-radius
@@ -611,7 +694,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
         MIN_VARIANT_COUNT,
         MAX_VARIANT_COUNT,
       );
-      opts.onFreeTextSubmit(text, count);
+      opts.onFreeTextSubmit(text, count, currentDeviation);
     });
     controls.appendChild(generate);
 

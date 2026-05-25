@@ -7,8 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DEVIATION_DEFAULT,
+  DEVIATION_MAX,
+  DEVIATION_MIN,
   _internals,
+  readDeviation,
   readVariantCount,
+  writeDeviation,
   writeVariantCount,
 } from "../../src/browser/persisted-settings.js";
 
@@ -128,6 +133,101 @@ describe("persisted-settings — graceful failure", () => {
       length: 0,
     } as Storage;
     expect(() => writeVariantCount(5)).not.toThrow();
+    // @ts-expect-error
+    delete globalThis.localStorage;
+  });
+});
+
+describe("persisted-settings — deviation (Phase 7.15)", () => {
+  let mem: { read: () => Record<string, string>; clear: () => void };
+
+  beforeEach(() => {
+    mem = installMemoryStorage();
+  });
+  afterEach(() => {
+    mem.clear();
+    // @ts-expect-error
+    delete globalThis.localStorage;
+  });
+
+  it("DEVIATION constants match spec (1..5, default 3)", () => {
+    expect(DEVIATION_MIN).toBe(1);
+    expect(DEVIATION_MAX).toBe(5);
+    expect(DEVIATION_DEFAULT).toBe(3);
+  });
+
+  it("returns DEFAULT (3) when storage empty", () => {
+    expect(readDeviation()).toBe(3);
+  });
+
+  it("returns fallback when storage empty", () => {
+    expect(readDeviation(4)).toBe(4);
+  });
+
+  it("persists and reads back integer values 1..5", () => {
+    for (const n of [1, 2, 3, 4, 5]) {
+      writeDeviation(n);
+      expect(readDeviation()).toBe(n);
+    }
+  });
+
+  it("clamps over-range writes to MAX (5)", () => {
+    writeDeviation(99);
+    expect(readDeviation()).toBe(5);
+  });
+
+  it("clamps under-range writes to MIN (1)", () => {
+    writeDeviation(0);
+    expect(readDeviation()).toBe(1);
+    writeDeviation(-5);
+    expect(readDeviation()).toBe(1);
+  });
+
+  it("rounds non-integers", () => {
+    writeDeviation(2.8);
+    expect(readDeviation()).toBe(3);
+    writeDeviation(4.2);
+    expect(readDeviation()).toBe(4);
+  });
+
+  it("malformed string in storage falls back to default", () => {
+    // @ts-expect-error — directly poke storage
+    globalThis.localStorage.setItem(_internals.STORAGE_KEY_DEVIATION, "not-a-number");
+    expect(readDeviation()).toBe(3);
+    expect(readDeviation(2)).toBe(2);
+  });
+
+  it("uses a separate storage key from variantCount", () => {
+    writeVariantCount(5);
+    writeDeviation(2);
+    expect(mem.read()).toEqual({
+      "wisp-design:variantCount": "5",
+      "wisp-design:deviation": "2",
+    });
+  });
+});
+
+describe("persisted-settings — deviation graceful failure", () => {
+  it("returns fallback when localStorage is undefined", () => {
+    // @ts-expect-error
+    delete globalThis.localStorage;
+    expect(readDeviation(4)).toBe(4);
+    expect(() => writeDeviation(2)).not.toThrow();
+  });
+
+  it("write does not throw on quota exceeded", () => {
+    // @ts-expect-error
+    globalThis.localStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: () => undefined,
+      clear: () => undefined,
+      key: () => null,
+      length: 0,
+    } as Storage;
+    expect(() => writeDeviation(3)).not.toThrow();
     // @ts-expect-error
     delete globalThis.localStorage;
   });

@@ -16,11 +16,31 @@ The contract source-of-truth is `src/contracts/agent.ts` — read it once for th
 | `target`                 | `event.target`                                | `PickResult` — selector, rect, attributes, tagName                 |
 | `freeText`               | `event.freeText`                              | Sanitised, ≤ 4000 chars                                            |
 | `requestedVariantCount`  | bar state                                     | One of `1 \| 3 \| 5 \| 8`                                          |
+| `deviation?`             | `event.deviation` (Phase 7.15)                | `1..5`. **Scales variant aggressiveness.** See "Deviation scale".  |
 | `sessionId`              | `event.sessionId`                             | UUID; routes to `.wisp/sessions/<id>.jsonl`                        |
 | `brandSpec?`             | `.wisp/brand-spec.json`                       | 9-section schema; optional                                         |
 | `designTokens?`          | `.wisp/design-tokens.json`                    | Spacing/radii/font-sizes/colors extracted from running app         |
 | `componentLib?`          | `package.json` scan                           | `shadcn \| radix \| mui \| tailwind \| vanilla`                    |
 | `axesEmphasis?`          | derived from `freeText` keywords              | Subset of the 5 axes; defaults to all 5                            |
+
+## Deviation scale (Phase 7.15)
+
+The `deviation` value, when present, tells you how strongly each non-baseline variant should drift from the original design. Default is `3` (balanced — the historic behavior). Treat it as a **per-variant strength dial**, not a global "spice up everything" knob; v0 stays baseline regardless.
+
+| `deviation` | Treatment                                                                                                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `1` subtle  | Touch ONE axis per variant. Weight shifts, line-height tweaks, single-color emphasis. No layout / structure / family changes. Refinement-only. |
+| `2` mild    | One axis per variant + minor secondary tweak (e.g. tracking change + color shift). Layout stays.                  |
+| `3` balanced (default) | Each variant owns a distinct primary axis (hierarchy / layout / typography / color / density). Layout MAY shift modestly. |
+| `4` bold    | Variants may combine two axes per variant and structurally reorder (flex order, banded zones, inverted dark). Different family allowed. |
+| `5` radical | Reimagine. Variants may discard the original shape entirely (e.g. price-only billboard, prose-block layout, glyph-first identity). Multiple axes per variant; the only constraint is anti-slop + a11y. |
+
+Rules of thumb:
+- v0 NEVER deviates — always the baseline.
+- Distinct-axes-rule still applies at deviation 1–3 (each non-v0 variant must own a different axis).
+- At deviation 4–5 the distinct-axes rule relaxes — you may have two "color" variants if they pursue genuinely different color stories.
+- A user who picked `5` is asking you to surprise them; don't ship 5 timid variants. Bring at least one variant that breaks expectations.
+- When `deviation` is `undefined` (older client / scripted POST), assume `3`.
 
 ## Output contract — `VariantGenerationResponse`
 

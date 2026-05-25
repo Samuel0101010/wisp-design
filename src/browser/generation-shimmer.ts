@@ -33,6 +33,7 @@ const SHIMMER_CSS = `
   z-index: 2147483645;
   border: 2px dashed rgba(23, 23, 23, 0.78);
   border-radius: 6px;
+  overflow: visible;
   background:
     linear-gradient(
       135deg,
@@ -49,20 +50,20 @@ const SHIMMER_CSS = `
   animation:
     wisp-shimmer-sweep 2.2s linear infinite,
     wisp-shimmer-pulse 1.6s ease-in-out infinite;
-  contain: layout paint;
 }
 [${W}="shimmer-label"] {
   position: absolute;
-  top: -10px;
-  right: 12px;
+  top: 8px;
+  right: 8px;
   font: 500 11px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   letter-spacing: 0.02em;
   color: rgb(245, 245, 245);
   background: rgb(23, 23, 23);
-  padding: 5px 9px;
+  padding: 6px 10px;
   border-radius: 999px;
   white-space: nowrap;
   transform: translateZ(0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }
 [${W}="shimmer-label"]::before {
   content: "";

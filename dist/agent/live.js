@@ -66,6 +66,12 @@ var init_bridge = __esm({
       target: ElementTargetSchema,
       freeText: z.string().min(1).max(4e3),
       variantCount: z.number().int().min(1).max(8),
+      // Phase 7.15 — deviation tells the agent how far variants should drift
+      // from the original design. 1 = subtle (typography weight, light spacing
+      // tweaks), 3 = balanced (mix of axes, the previous default behavior),
+      // 5 = radical (reimagined layout/structure/color, may break conventions).
+      // Optional so older clients / scripted POSTs keep working at the default.
+      deviation: z.number().int().min(1).max(5).optional(),
       sessionId
     });
     CyclingEventSchema = z.object({

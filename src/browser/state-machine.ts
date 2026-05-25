@@ -73,6 +73,10 @@ interface ConfigureEditPayload {
 }
 interface ConfigureSubmitPayload {
   requestedVariantCount: number;
+  /** Phase 7.15 — deviation 1..5 (subtle..bold). Optional for back-compat;
+   *  when undefined, the generating event omits the field and the agent
+   *  uses its default behavior. */
+  deviation?: number;
 }
 interface GenerateArrivedPayload {
   variants: Variant[];
@@ -106,10 +110,20 @@ function configureEdit(payload: unknown): ConfigureEditPayload | null {
 }
 
 function configureSubmit(payload: unknown): ConfigureSubmitPayload {
-  if (isObject(payload) && typeof payload.requestedVariantCount === "number") {
-    return { requestedVariantCount: payload.requestedVariantCount };
+  let count = 3;
+  let deviation: number | undefined;
+  if (isObject(payload)) {
+    if (typeof payload.requestedVariantCount === "number") {
+      count = payload.requestedVariantCount;
+    }
+    if (typeof payload.deviation === "number") {
+      const d = Math.round(payload.deviation);
+      if (d >= 1 && d <= 5) deviation = d;
+    }
   }
-  return { requestedVariantCount: 3 };
+  return deviation === undefined
+    ? { requestedVariantCount: count }
+    : { requestedVariantCount: count, deviation };
 }
 
 function generateArrived(payload: unknown): GenerateArrivedPayload | null {
@@ -200,13 +214,17 @@ function reduce(
     case "configure-submit": {
       if (state.kind !== "configuring") return state;
       const p = configureSubmit(payload);
-      return {
+      const next: BrowserState = {
         kind: "generating",
         targets: state.targets,
         freeText: state.freeText,
         requestedVariantCount: p.requestedVariantCount,
         startedAt: now(),
       };
+      if (p.deviation !== undefined) {
+        (next as { deviation?: number }).deviation = p.deviation;
+      }
+      return next;
     }
 
     case "generate-variants-arrived": {

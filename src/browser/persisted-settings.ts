@@ -13,6 +13,15 @@
 import { DEFAULT_VARIANT_COUNT } from "./constants.js";
 
 const STORAGE_KEY_VARIANT_COUNT = "wisp-design:variantCount";
+const STORAGE_KEY_DEVIATION = "wisp-design:deviation";
+
+/** Discrete deviation level: 1 = subtle refinement, 5 = radical reimagining.
+ *  Default 3 (balanced). The agent reads this from the generating event and
+ *  scales the variant aggressiveness — at 1, swap only typography weight or
+ *  spacing; at 5, completely reimagine layout/structure/color. */
+export const DEVIATION_MIN = 1;
+export const DEVIATION_MAX = 5;
+export const DEVIATION_DEFAULT = 3;
 
 /** Bounds-checked variant count: 1..8, integer. */
 function clampVariantCount(n: number): number {
@@ -59,8 +68,43 @@ export function writeVariantCount(n: number): void {
   }
 }
 
+function clampDeviation(n: number): number {
+  if (!Number.isFinite(n)) return DEVIATION_DEFAULT;
+  const r = Math.round(n);
+  if (r < DEVIATION_MIN) return DEVIATION_MIN;
+  if (r > DEVIATION_MAX) return DEVIATION_MAX;
+  return r;
+}
+
+export function readDeviation(fallback?: number): number {
+  const fb = clampDeviation(fallback ?? DEVIATION_DEFAULT);
+  const ls = safeStorage();
+  if (ls === null) return fb;
+  try {
+    const raw = ls.getItem(STORAGE_KEY_DEVIATION);
+    if (raw === null || raw === "") return fb;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fb;
+    return clampDeviation(n);
+  } catch {
+    return fb;
+  }
+}
+
+export function writeDeviation(n: number): void {
+  const ls = safeStorage();
+  if (ls === null) return;
+  try {
+    ls.setItem(STORAGE_KEY_DEVIATION, String(clampDeviation(n)));
+  } catch {
+    /* quota / strict — drop */
+  }
+}
+
 // Exported for the test suite to reset state between cases.
 export const _internals = {
   STORAGE_KEY_VARIANT_COUNT,
+  STORAGE_KEY_DEVIATION,
   clampVariantCount,
+  clampDeviation,
 };
