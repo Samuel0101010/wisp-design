@@ -57,6 +57,11 @@ import {
   readDeviation,
   writeDeviation,
 } from "./persisted-settings.js";
+import { scoreVariant, type RadarScore } from "./a11y-radar.js";
+import {
+  mountMorphSlider,
+  type MorphSliderHandle,
+} from "./variant-morph-slider.js";
 
 const SELECTED_ATTR = "data-wisp-selected";
 const VARIANT_COUNT_CHOICES = [1, 3, 5, 8] as const;
@@ -237,6 +242,20 @@ const BAR_STYLES =
     `font-size:10px;background:${C.neutral900};color:${C.white};` +
     `border-radius:9999px;padding:1px 7px;font-weight:500;` +
   `}` +
+  // a11y-radar badge (Phase 7.16, Tier-2 #1). Score 0..100 with color band.
+  `[${W}="radar-badge"]{` +
+    `font-size:10px;border-radius:9999px;padding:1px 6px;font-weight:600;` +
+    `font-variant-numeric:tabular-nums;letter-spacing:0.02em;` +
+    `display:inline-flex;align-items:center;gap:3px;` +
+    `cursor:help;` +
+  `}` +
+  `[${W}="radar-badge"][data-severity="good"]{background:rgb(220 252 231);color:rgb(22 101 52)}` +
+  `[${W}="radar-badge"][data-severity="warn"]{background:rgb(254 243 199);color:rgb(120 53 15)}` +
+  `[${W}="radar-badge"][data-severity="fail"]{background:rgb(254 226 226);color:rgb(127 29 29)}` +
+  `[${W}="radar-dot"]{width:6px;height:6px;border-radius:50%}` +
+  `[${W}="radar-dot"][data-severity="good"]{background:rgb(34 197 94)}` +
+  `[${W}="radar-dot"][data-severity="warn"]{background:rgb(245 158 11)}` +
+  `[${W}="radar-dot"][data-severity="fail"]{background:rgb(239 68 68)}` +
   `[${W}="card-rationale"]{` +
     `font-size:13px;color:${C.text700};` +
     `display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;` +
@@ -329,6 +348,32 @@ function btn(
 
 function clear(node: Element): void {
   while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+// Phase 7.16 — build an a11y-radar badge element. Score is a 0..100 score
+// with severity-coloured background; tooltip carries the top finding so
+// the user can hover to see the most-impacting penalty without opening
+// the audit panel.
+function makeRadarBadge(score: RadarScore): HTMLElement {
+  const badge = document.createElement("span");
+  badge.setAttribute(WISP_UI_DATA_ATTRIBUTE, "radar-badge");
+  badge.setAttribute("data-severity", score.severity);
+  badge.setAttribute(
+    "aria-label",
+    `Accessibility score ${score.score} out of 100, ${score.severity}`,
+  );
+  const tooltip =
+    score.topFinding === null
+      ? `a11y ${score.score} / 100 — no detected issues`
+      : `a11y ${score.score} / 100 — ${score.topFinding.message}`;
+  badge.title = tooltip;
+  const dot = document.createElement("span");
+  dot.setAttribute(WISP_UI_DATA_ATTRIBUTE, "radar-dot");
+  dot.setAttribute("data-severity", score.severity);
+  dot.setAttribute("aria-hidden", "true");
+  badge.appendChild(dot);
+  badge.appendChild(document.createTextNode(`a11y ${score.score}`));
+  return badge;
 }
 
 function injectStylesOnce(): void {
@@ -470,6 +515,17 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
       activeShimmer = null;
     }
   };
+
+  // Phase 7.16 — Track the variant-morph-slider so we can unmount it on
+  // state change (idle/configure/picking/generating) or recreate it when
+  // the active variant changes within cycling.
+  let activeMorph: MorphSliderHandle | null = null;
+  const closeActiveMorph = (): void => {
+    if (activeMorph !== null) {
+      activeMorph.unmount();
+      activeMorph = null;
+    }
+  };
   // Cache the last configure-targets so renderGenerating (which has no
   // ctx.targets — only startedAt + count) can resolve the shimmer mount
   // points. Reset to [] when the bar exits the configure→generate cycle.
@@ -497,6 +553,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     stopElapsed();
     closeActiveTools();
     closeActiveShimmer();
+    closeActiveMorph();
     lastConfigureTargets = [];
     clear(content);
 
@@ -523,6 +580,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     stopElapsed();
     closeActiveTools();
     closeActiveShimmer();
+    closeActiveMorph();
     clear(content);
 
     content.appendChild(makeBrand());
@@ -544,6 +602,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     stopElapsed();
     closeActiveTools();
     closeActiveShimmer();
+    closeActiveMorph();
     // Cache the targets so the next renderGenerating can find the elements
     // to shimmer over. ConfigureCtx is the last state that carries them.
     lastConfigureTargets = ctx.targets;
@@ -716,6 +775,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
   const renderGenerating = (ctx: GeneratingCtx): void => {
     stopElapsed();
     closeActiveTools();
+    closeActiveMorph();
     // Mount the generation-shimmer over the picked element(s). If we lost
     // the configure-targets (state-machine started from a non-configure
     // state, or this is a re-render), skip silently — the bar's own
@@ -765,6 +825,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     stopElapsed();
     closeActiveTools();
     closeActiveShimmer();
+    closeActiveMorph();
     clear(content);
 
     content.appendChild(makeBrand());
@@ -794,6 +855,14 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
         badge.textContent = "active";
         cardTop.appendChild(badge);
       }
+
+      // Phase 7.16 — a11y-radar badge per variant. Scored from the variant's
+      // CSS text (contrast, font-size, motion, anti-slop signals). Tooltip
+      // surfaces the top finding so the user knows WHY a score is low
+      // without opening the audit panel.
+      const radarScore = scoreVariant(v.css ?? "");
+      const radarBadge = makeRadarBadge(radarScore);
+      cardTop.appendChild(radarBadge);
 
       card.appendChild(cardTop);
 
@@ -869,6 +938,27 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     actions.appendChild(accept);
 
     content.appendChild(actions);
+
+    // Phase 7.16 — variant-morph-slider. Interpolate cssVars between the
+    // active variant and the next one in the stack. If only one variant
+    // exists OR neither shares numeric vars, mountMorphSlider renders a
+    // quiet empty-state hint instead of a non-functional slider.
+    if (ctx.variants.length >= 2 && active) {
+      const nextIdx = (ctx.activeIndex + 1) % ctx.variants.length;
+      const partner = ctx.variants[nextIdx];
+      if (partner) {
+        activeMorph = mountMorphSlider({
+          container: content,
+          variantA: { id: active.id, cssVars: active.cssVars ?? {} },
+          variantB: { id: partner.id, cssVars: partner.cssVars ?? {} },
+          onMorph: (vars) => {
+            for (const [name, value] of Object.entries(vars)) {
+              opts.onParamChange(name, value);
+            }
+          },
+        });
+      }
+    }
 
     // Keyboard hint
     const hint = el("div", { [WISP_UI_DATA_ATTRIBUTE]: "hint" });
@@ -990,6 +1080,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
       stopElapsed();
       closeActiveTools();
       closeActiveShimmer();
+      closeActiveMorph();
       document.removeEventListener("keydown", handleKeyInternal, true);
       if (container.parentNode) container.parentNode.removeChild(container);
       const styles = document.querySelector(`style[${WISP_UI_DATA_ATTRIBUTE}="bar-styles"]`);
