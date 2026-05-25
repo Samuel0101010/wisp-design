@@ -393,13 +393,16 @@ function rewriteSingleSelector(sel: string, scopeSelector: string): string {
   // But carbonize was naively prepending `${scopeSelector} ${sel}` here,
   // which produced `article.x article > ...` — a non-existent nested article.
   // Detect when the selector STARTS with the picked tag immediately followed
-  // by a combinator (space, `>`, `+`, `~`) or end-of-selector — that's the
-  // "I-meant-the-picked-element" shape — and replace the tag with the scope.
-  // Compound shapes like `article.foo` are NOT stripped (the trailing `.`/`#`/
-  // `[`/`:` is not a combinator), so they fall through to the safe prepend
-  // path and remain matchable as a stricter descendant.
+  // by a combinator (space, `>`, `+`, `~`), a pseudo-class/element prefix
+  // (`:` covers both `:hover` and `::first-letter`), a comma group separator,
+  // or end-of-selector — that's the "I-meant-the-picked-element" shape — and
+  // replace the tag with the scope.
+  // Compound shapes like `article.foo`, `article#id`, `article[attr]` are
+  // NOT stripped (the trailing `.`/`#`/`[` is not in the allowed follow-set),
+  // so they fall through to the safe prepend path and remain matchable as a
+  // stricter descendant inside the picked element's subtree.
   if (pickedTag !== null) {
-    const re = new RegExp(`^${pickedTag}(?=\\s|[>+~,]|$)`, "i");
+    const re = new RegExp(`^${pickedTag}(?=\\s|[>+~,:]|$)`, "i");
     const m = sel.match(re);
     if (m !== null) {
       const rest = sel.slice(m[0].length);

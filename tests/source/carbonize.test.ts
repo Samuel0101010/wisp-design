@@ -459,6 +459,78 @@ describe("carbonize — bare-picked-tag strip (Phase 7.14)", () => {
     // No picked-tag → safe descendant prepend.
     expect(out).toContain('[data-wisp-target="t1"] article > h3');
   });
+
+  // Phase 7.15b — pseudo-class / pseudo-element support.
+  // Without these, `h3:hover { ... }` would carbonize to
+  // `h3.foo h3:hover` (descendant prepend), which means "find a nested h3
+  // inside the picked h3 that's being hovered" — never matches.
+
+  it("strips bare picked-tag before single-colon pseudo-class `:hover`", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article:hover { transform: translateY(-2px); }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE}:hover`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("strips bare picked-tag before double-colon pseudo-element `::first-letter`", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  h3::first-letter { font-size: 2.5rem; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: "h3.font-medium.text-base.text-neutral-900",
+    });
+    expect(out).toContain("h3.font-medium.text-base.text-neutral-900::first-letter");
+    expect(out).not.toContain(".text-neutral-900 h3");
+  });
+
+  it("strips picked-tag before functional pseudo `:nth-of-type(2)`", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article:nth-of-type(2) > p { color: red; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE}:nth-of-type(2) > p`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("strips picked-tag before chained pseudo `:hover::before`", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article:hover::before { content: ''; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE}:hover::before`);
+    expect(out).not.toContain(`${ARTICLE_SCOPE} article`);
+  });
+
+  it("does NOT strip when followed by class (compound) — `article.foo` stays descendant", () => {
+    // Sanity guard: the new `:` in the lookahead set MUST NOT break the
+    // existing compound-selector exception (`article.foo` is a stricter
+    // descendant filter, not the picked-element shorthand).
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  article.featured { background: yellow; }\n" +
+      "}";
+    const out = carbonize(input, {
+      paramOverrides: noOverrides(),
+      scopeSelector: ARTICLE_SCOPE,
+    });
+    expect(out).toContain(`${ARTICLE_SCOPE} article.featured`);
+  });
 });
 
 describe("carbonize — phase-7.11 production fixture lock", () => {
