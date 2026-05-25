@@ -86,14 +86,12 @@ Once your dev server (`next dev`, `vite`, `pnpm dev`, anything with HMR) is runn
 
 | Key | Action |
 |---|---|
-| `1` `2` `3` | jump to variant 1 / 2 / 3 |
-| `n` / `p` | next / previous variant |
-| `t` | open Tune popover (CSS-var sliders) |
-| `a` | accept active variant |
-| `r` | discard and re-prompt |
-| `m` | toggle morph-mode (interpolate between two variants) |
-| `v` | toggle viewport-trio (375 / 768 / 1280) |
-| `Esc` | exit pick mode |
+| `1` … `8` | jump to variant N |
+| `←` / `→` | cycle variants |
+| `Enter` | accept active variant |
+| `Backspace` | discard variants |
+| `Ctrl/⌘-click` | multi-select (add another element) |
+| `Esc` | cancel any state |
 
 ### The Verification Gate
 
@@ -108,7 +106,7 @@ Before any accept, the gate runs in parallel (p95 ≤ 3s):
 | Tab-order focus-trap leak | warn | block |
 | `prefers-reduced-motion` render diff | warn if differs | block if differs |
 
-Every blocked accept cites the exact rule and offers a one-keystroke quick-fix. Override is possible with `Shift+a`; the override is logged to the session JSONL so you can audit what was force-shipped later.
+Every blocked accept cites the exact rule. In default mode the gate warns; only `audit --mode strict` (used by CI and the pre-commit hook) actually blocks. Decisions are logged to the session JSONL so you can audit what was accepted later.
 
 ## How it works
 
@@ -183,14 +181,27 @@ Same author, complementary plugins. Each one solves a single sharp pain in the C
 
 | Plugin | Stage of the loop |
 |---|---|
-| [**wisp-orchestrator**](https://github.com/Samuel0101010/wisp-orchestrator) | Plan + spawn + watch multi-agent runs |
 | [**wisp-agentdiff**](https://github.com/Samuel0101010/wisp-agentdiff) | Review + approve + merge per-agent worktrees |
 | [**wisp-receipt**](https://github.com/Samuel0101010/wisp-receipt) | Block "fertig"-claims that aren't backed by an evidence ledger |
 | **wisp-design** *(this repo)* | Live-edit the running frontend with three variants, a11y-gated accept, source-file splice |
 
 ## Status & roadmap
 
-Pre-release. Eight phases tracked in [`CLAUDE.md`](CLAUDE.md). v0.1.0-prerelease ships Phase 0 (scaffolding + plugin manifest); v1.0.0 ships the full Verification-Gate + Session-Replay loop. Issues and PRs welcome once we go public — for now the repo is private until v1.0.0.
+Pre-release at `v0.8.0-prerelease`. Eight phases tracked in [`CLAUDE.md`](CLAUDE.md):
+
+| Phase | Tag | Status |
+|---|---|---|
+| 0 — Scaffolding & manifest | `v0.1.0-prerelease` | ✓ shipped |
+| 1 — Local bridge server (HTTP + SSE, long-poll, auth, CORS) | `v0.2.0-prerelease` | ✓ shipped |
+| 2 — Browser runtime (`live.js` IIFE, state-machine, picker, variant-render) | `v0.3.0-prerelease` | ✓ shipped |
+| 3 — Source-edit engine (inject / wrap / accept / carbonize / safety / undo) | `v0.4.0-prerelease` | ✓ shipped |
+| 4 — Agent-loop + skill corpus (poll-loop, history, policy, morph, BM25-lite) | `v0.5.0-prerelease` | ✓ shipped |
+| 5 — Verification gate (anti-slop, a11y-axe, console, tab-order, reduced-motion, multi-viewport) | `v0.6.0-prerelease` | ✓ shipped |
+| 6 — Session-replay + component-lib awareness (shadcn / Radix / MUI / Chakra / Ant / Tailwind) | `v0.7.0-prerelease` | ✓ shipped |
+| 7 — Launch-prep (FPR 0%, Playwright a11y, 20 directions, 14 corpus CSVs, persisted-settings) | `v0.8.0-prerelease` | ✓ shipped |
+| **v1.0.0 — public launch** | `v1.0.0` | next |
+
+**Quality metrics** (as of `v0.8.0-prerelease`): 911 tests across 56 files, all green. Anti-slop hard-ban FPR 0.00%, soft-warn FPR 0.00%, FN-rate 0/30 on the known-slop corpus. Stop-hook anti-slop runs in ~2ms (p99 budget 100ms). Audit-strict catches all 13 hard-bans in [`sample/index.html`](sample/index.html). Issues and PRs welcome once the repo goes public at v1.0.0 — currently private during launch-prep.
 
 ## Develop
 
