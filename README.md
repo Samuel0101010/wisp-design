@@ -28,13 +28,13 @@ Three variants on a hero CTA. Variant 2 looks great but its blue dropped contras
   <img src="docs/assets/screenshot-1-pick.png" alt="wisp-design picker hovering a hero CTA" width="720">
 </p>
 
-<p align="center"><em>Pick mode — hover any element, magenta border + tag tooltip. Click to configure.</em></p>
+<p align="center"><em>Pick mode — hover any element; the picker outlines it and shows a tag-and-size tooltip. Click to configure.</em></p>
 
 <p align="center">
   <img src="docs/assets/screenshot-2-cycle.png" alt="wisp-design cycling 3 variants with a11y badges" width="720">
 </p>
 
-<p align="center"><em>Cycle mode — three distinct variants, per-variant a11y delta badge, slider-tunable CSS params, 1-sentence rationale on hover.</em></p>
+<p align="center"><em>Cycle mode — the card re-renders live as you switch between variants. Each variant carries its own rationale; Accept / Discard / Annotate / Copy&nbsp;CSS sit one keypress away.</em></p>
 
 <p align="center">
   <img src="docs/assets/screenshot-3-gate.png" alt="wisp-design verification gate blocking accept on AA contrast failure" width="720">
