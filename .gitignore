@@ -52,6 +52,8 @@ agentdb.rvf.lock
 # are the canonical ones shipped with the repo. Keep originals out of git.
 /WISP_Figur.png
 /WISP_Schriftzug.png
+/WISP_Design.png
+/wisp-figure.png
 
 # Research artifacts stay in-repo for now (private repo); reconsider before public launch
 # research/
