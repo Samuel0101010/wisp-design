@@ -251,7 +251,14 @@ export async function runAudit(args: string[]): Promise<number> {
       content = await fs.readFile(filePath, "utf8");
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
+      if (code === "EISDIR") {
+        writeError({
+          code: "EISDIR",
+          message:
+            `audit: '${filePath}' is a directory — audit takes file paths only. ` +
+            `Pass explicit files (e.g. 'audit src/*.tsx') or run without args to fall back to changed-files mode.`,
+        });
+      } else if (code !== "ENOENT" && code !== "ENOTDIR") {
         writeError({
           code: "READ_FAILED",
           message: `audit: failed to read ${filePath}: ${(err as Error).message}`,

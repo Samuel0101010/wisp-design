@@ -2489,7 +2489,12 @@ async function runAudit(args) {
       content = await fs4.readFile(filePath, "utf8");
     } catch (err) {
       const code = err.code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
+      if (code === "EISDIR") {
+        writeError({
+          code: "EISDIR",
+          message: `audit: '${filePath}' is a directory \u2014 audit takes file paths only. Pass explicit files (e.g. 'audit src/*.tsx') or run without args to fall back to changed-files mode.`
+        });
+      } else if (code !== "ENOENT" && code !== "ENOTDIR") {
         writeError({
           code: "READ_FAILED",
           message: `audit: failed to read ${filePath}: ${err.message}`
