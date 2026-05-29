@@ -188,19 +188,105 @@ describe("Bug #12/#13 — stop-hook runs and completes within budget", () => {
     }
   });
 
-  it("strict mode outputs permissionDecision block JSON", () => {
-    // Only meaningful when there are slop files in the git diff.
-    // Run against a file with known hard-ban hits in the working tree.
-    const result = cli(["hook", "stop"], {
+  // ---------------------------------------------------------------------------
+  // Findings #1+#2+#3 (cli-core fix-spec) — strict-mode hard-block is the
+  // documented USP. It MUST emit Claude Code's Stop-hook contract
+  // { decision: "block", reason: "..." } (NOT the PreToolUse
+  // permissionDecision/message shape, which Stop silently ignores), and the
+  // anti-slop linter MUST actually run after the git read (the budget clock
+  // must be re-anchored so git latency does not consume the linter's window).
+  //
+  // We stage a known-slop fixture into an isolated temp git repo so the
+  // assertion is deterministic and independent of the ambient (possibly
+  // concurrently-dirty) working tree.
+  // ---------------------------------------------------------------------------
+
+  function gitAvailable(): boolean {
+    return spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
+  }
+
+  function makeSlopRepo(): string {
+    const dir = join(tmpdir(), `wisp-strict-block-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const run = (args: string[]) =>
+      spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    run(["init", "-q"]);
+    run(["config", "user.email", "t@t.t"]);
+    run(["config", "user.name", "t"]);
+    run(["config", "commit.gpgsign", "false"]);
+    // Commit a clean placeholder so HEAD exists, then overwrite with slop so
+    // `git diff HEAD --name-only` reports the file regardless of platform.
+    const target = join(dir, "Hero.tsx");
+    writeFileSync(target, "export const Hero = () => null;\n");
+    run(["add", "-A"]);
+    run(["commit", "-q", "-m", "init"]);
+    writeFileSync(target, readFileSync(SAMPLE_AI_HERO, "utf8"));
+    return dir;
+  }
+
+  function runStopHookIn(cwd: string, env: NodeJS.ProcessEnv) {
+    return spawnSync("node", [DIST_INDEX, "hook", "stop"], {
+      encoding: "utf8",
+      timeout: 15000,
       input: "{}",
-      env: { WISP_DESIGN_STRICT: "1" },
+      env: { ...process.env, ...env },
+      cwd,
     });
-    expect(result.status).toBe(0);
-    if (result.stdout.trim().length > 0) {
-      const parsed = parseJsonOutput(result.stdout) as { permissionDecision?: string } | null;
-      if (parsed !== null && typeof parsed === "object" && "permissionDecision" in parsed) {
-        expect(parsed.permissionDecision).toBe("block");
-      }
+  }
+
+  it("strict mode emits Stop-hook { decision: 'block' } JSON over staged slop", () => {
+    if (!gitAvailable()) return; // git is a hard dependency of the stop-hook
+    const dir = makeSlopRepo();
+    try {
+      const result = runStopHookIn(dir, { WISP_DESIGN_STRICT: "1" });
+      expect(result.status).toBe(0);
+      const parsed = parseJsonOutput(result.stdout) as {
+        decision?: string;
+        reason?: string;
+      } | null;
+      expect(parsed).not.toBeNull();
+      expect(parsed!.decision).toBe("block");
+      expect(typeof parsed!.reason).toBe("string");
+      expect(parsed!.reason!.length).toBeGreaterThan(0);
+      expect(parsed!.reason).toMatch(/anti-slop/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("default (non-strict) mode over staged slop warns on stderr, no block JSON", () => {
+    if (!gitAvailable()) return;
+    const dir = makeSlopRepo();
+    try {
+      const result = runStopHookIn(dir, {});
+      expect(result.status).toBe(0);
+      // No block JSON on stdout in warn mode.
+      expect(parseJsonOutput(result.stdout)).toBeNull();
+      expect(result.stderr).toMatch(/wisp-design anti-slop warn/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("strict mode over a clean diff emits NOTHING (no spurious block)", () => {
+    if (!gitAvailable()) return;
+    const dir = join(tmpdir(), `wisp-strict-clean-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const run = (args: string[]) =>
+        spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      run(["init", "-q"]);
+      run(["config", "user.email", "t@t.t"]);
+      run(["config", "user.name", "t"]);
+      run(["config", "commit.gpgsign", "false"]);
+      writeFileSync(join(dir, "Clean.tsx"), "export const C = () => null;\n");
+      run(["add", "-A"]);
+      run(["commit", "-q", "-m", "init"]);
+      const result = runStopHookIn(dir, { WISP_DESIGN_STRICT: "1" });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -332,5 +418,41 @@ describe("Bug #16 — component-detect identifies all major libs", () => {
     const result = await detect({ projectRoot: root, quick: true });
     expect(result.primaryLib).toBe("mui");
     expect(result.confidence).toBeGreaterThanOrEqual(0.45);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding #4 (cli-core fix-spec) — lazyLoad must not mask a real import error
+// in a shipped module as "not yet implemented". A genuine throw during import
+// (ReferenceError, bad transitive import, top-level schema build error) must
+// be re-thrown so the CLI surfaces the actual error (exit 1, "fatal — …")
+// rather than the misleading "not yet implemented" (exit 2).
+// ---------------------------------------------------------------------------
+describe("Finding #4 — lazyLoad surfaces real import errors (not 'not yet implemented')", () => {
+  const MORPH = join(ROOT, "dist", "agent", "morph.js");
+  const BACKUP = join(ROOT, "dist", "agent", `morph.js.cli-core-bak-${randomUUID()}`);
+
+  it("a shipped module that throws at import → exit 1 + 'fatal', NOT exit 2 stub", () => {
+    // Requires a built dist; skip if the CLI bundle is absent.
+    if (!existsSync(DIST_INDEX) || !existsSync(MORPH)) return;
+    // Back up the real module, then replace it with one that throws a genuine
+    // (non-MODULE_NOT_FOUND) error at import time.
+    writeFileSync(BACKUP, readFileSync(MORPH));
+    try {
+      writeFileSync(
+        MORPH,
+        'throw new ReferenceError("wisp-cli-core-test: simulated boom");\n',
+      );
+      const result = cli(["morph", "--variant-a", "x", "--variant-b", "y", "--t", "0.5"]);
+      // The bare-catch bug maps this to notImplemented (exit 2, "not yet
+      // implemented"). The fix re-throws → main().catch() → exit 1 + "fatal".
+      expect(result.stderr).not.toMatch(/not yet implemented/i);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/fatal/i);
+      expect(result.stderr).toMatch(/simulated boom/);
+    } finally {
+      writeFileSync(MORPH, readFileSync(BACKUP));
+      rmSync(BACKUP, { force: true });
+    }
   });
 });

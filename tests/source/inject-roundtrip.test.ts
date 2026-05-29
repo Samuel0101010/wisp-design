@@ -69,6 +69,14 @@ const HTML_NOHEAD =
 
 const HTML_NEITHER = "<!doctype html>\n<html>\n<p>hi</p>\n</html>\n";
 
+// No trailing newline + no </head>/</body> → forces the EOF anchor on a file
+// whose last line carries content. The data-loss regression fixture.
+const HTML_NEITHER_NONL = "<!doctype html><html><p>hi</p></html>";
+
+const VUE_NONL = `<template>
+  <div>hi</div>
+</template>`;
+
 const VUE = `<template>
   <head>
     <title>x</title>
@@ -102,13 +110,10 @@ describe("inject + remove — HTML byte-equivalence roundtrip", () => {
   // making removeLiveScript always throw "no wisp-inject block found".
   // Lead-fix in src/contracts/source.ts switched to `[\s\S]*?` — the
   // trailing `-->` / `*/` is the natural terminator.
-  // Phase-3 known limitation: `removeLiveScript` collapses one accidental
-  // `\n\n\n` window at the splice site (documented in inject.ts as
-  // `collapseDoubleBlank`). With HTML_FULL the collapse drops one byte vs the
-  // pre-inject file, so the engine honestly reports
-  // `restoredByteEquivalent: false`. We assert the structural-recovery
-  // properties (markers gone, content otherwise intact) and pin the SHA
-  // delta as a documented Phase-6 follow-up.
+  // The </head> anchor is now taken at the START of the closing-tag line, so
+  // the marker block occupies its own clean lines and inject→remove restores
+  // the file byte-for-byte (no donated indentation, no `\n\n\n` collapse).
+  // restoredByteEquivalent is true for HTML_FULL.
   it("LF file: inject + remove removes markers and restores body verbatim", async () => {
     const file = join(root, "index.html");
     writeFileSync(file, HTML_FULL, "utf8");
@@ -134,9 +139,9 @@ describe("inject + remove — HTML byte-equivalence roundtrip", () => {
     // Core HTML structure intact.
     expect(restored).toContain("<title>x</title>");
     expect(restored).toContain("<div id='app'></div>");
-    // Phase-3 limitation: collapse-window may drop one byte vs pre-inject.
-    // restoredByteEquivalent is honest about it. Pin both directions:
-    expect(typeof removeRes.restoredByteEquivalent).toBe("boolean");
+    // Full byte-for-byte restore: markers gone, indentation preserved.
+    expect(restored).toBe(HTML_FULL);
+    expect(removeRes.restoredByteEquivalent).toBe(true);
   });
 
   it("CRLF file: inject preserves CRLF, remove restores structure (no LF leakage)", async () => {
@@ -372,6 +377,51 @@ describe("inject — Vue / Svelte SFC fallback (EOF anchor)", () => {
     expect(restored).not.toContain("wisp-inject");
     expect(restored).toContain("<template>");
     expect(restored).toContain("<div>hi</div>");
+  });
+
+  // REGRESSION — CRITICAL data-loss. A file with NO trailing newline and no
+  // </head>/</body> hits the EOF anchor; before the fix, inject glued the
+  // open-marker onto the file's last content line, and removeLiveScript then
+  // treated offset-0 (the file's FIRST byte) as the marker-line start and
+  // sliced the entire file away → empty file on a routine session-shutdown
+  // remove. Assert byte-for-byte restore.
+  it("EOF anchor + no trailing newline: inject + remove restores file byte-for-byte (no wipe)", async () => {
+    const file = join(root, "noNl.html");
+    writeFileSync(file, HTML_NEITHER_NONL, "utf8");
+    await injectLiveScript(
+      file,
+      { bridgeUrl: BRIDGE_URL, token: TOKEN, preferredAnchor: "auto", inline: false },
+      { projectRoot: root },
+    );
+    const afterInject = readFileSync(file, "utf8");
+    // The original closing tag must survive on its own line, not be glued to
+    // the open-marker.
+    expect(afterInject).toContain("</html>");
+    expect(afterInject).toContain("wisp-inject-start");
+    const removeRes = await removeLiveScript(file, { projectRoot: root });
+    expect(removeRes.removed).toBe(true);
+    const restored = readFileSync(file, "utf8");
+    expect(restored).not.toContain("wisp-inject");
+    expect(restored).toBe(HTML_NEITHER_NONL);
+    expect(removeRes.restoredByteEquivalent).toBe(true);
+  });
+
+  // REGRESSION — same data-loss class via the .vue EOF anchor (SFCs always
+  // fall to EOF) with no trailing newline.
+  it(".vue + no trailing newline: inject + remove restores byte-for-byte", async () => {
+    const file = join(root, "App.vue");
+    writeFileSync(file, VUE_NONL, "utf8");
+    await injectLiveScript(
+      file,
+      { bridgeUrl: BRIDGE_URL, token: TOKEN, preferredAnchor: "auto", inline: false },
+      { projectRoot: root },
+    );
+    const removeRes = await removeLiveScript(file, { projectRoot: root });
+    expect(removeRes.removed).toBe(true);
+    const restored = readFileSync(file, "utf8");
+    expect(restored).not.toContain("wisp-inject");
+    expect(restored).toBe(VUE_NONL);
+    expect(removeRes.restoredByteEquivalent).toBe(true);
   });
 
   it(".svelte: inject + remove removes markers and restores body", async () => {

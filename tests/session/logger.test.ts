@@ -312,9 +312,10 @@ describe("sessionLogger — Phase-3 inherited kinds + serialization", () => {
     ).rejects.toThrow(/filePath/i);
   });
 
-  it("concurrent helper calls all land — final byte-count == sum of entries", async () => {
-    // Sequential await chain to keep deterministic ordering on Windows.
-    // POSIX O_APPEND atomicity is best-effort; we don't race here.
+  it("sequential helper calls land in order — line-count == N and targetIds preserved", async () => {
+    // Single-writer invariant (logger.ts L4-6): all appends go through one
+    // path, so we exercise a deterministic sequential await chain — not a
+    // concurrent burst. Order IS asserted because there is no race here.
     const N = 8;
     for (let i = 0; i < N; i += 1) {
       await sessionLogger.logPick(

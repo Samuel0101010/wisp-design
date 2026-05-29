@@ -164,6 +164,37 @@ describe("runConsoleScan — static mode", () => {
     expect(res.severity).toBe("pass");
   });
 
+  it("marks a no-input scan as skipped (honest reporting)", async () => {
+    // No session log, no bridge, no <script> content to scan. Must report a
+    // skipped marker so the report distinguishes "ran clean" from "had nothing
+    // to scan" (mirrors a11y-axe's no-input behaviour).
+    const res = await runConsoleScan({});
+    expect(res.severity).toBe("pass");
+    expect(res.skipped).toBeDefined();
+    expect(res.skipped?.reason).toBe("error");
+  });
+
+  it("CSS-only input (no <script>) is reported as skipped no-input", async () => {
+    const css = `.x { color: red; padding: 16px; }`;
+    const res = await runConsoleScan({ cssOrHtml: css });
+    expect(res.severity).toBe("pass");
+    expect(res.skipped).toBeDefined();
+  });
+
+  it("an empty-but-present session log reports plain pass (it DID scan)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wisp-console-noinput-"));
+    try {
+      const logPath = join(dir, "present-empty.jsonl");
+      writeFileSync(logPath, "");
+      const res = await runConsoleScan({ sessionLogPath: logPath });
+      expect(res.severity).toBe("pass");
+      // It legitimately scanned a (present) log and found nothing — NOT a skip.
+      expect(res.skipped).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("warn (not fail) when only 'warn' present", async () => {
     const html = `<script>console.warn("ok-ish")</script>`;
     const res = await runConsoleScan({ cssOrHtml: html });

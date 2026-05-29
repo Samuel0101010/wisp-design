@@ -505,11 +505,11 @@ var init_source = __esm({
     GENERATED_MAGIC_COMMENT_REGEX = /^[\s\S]{0,200}@generated/i;
     REFUSE_LIST = [
       // Build / dependency / generated output directories.
-      /[\/\\](node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|coverage|__generated__|target)[\/\\]/,
+      /[\/\\](node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|coverage|__generated__|target)[\/\\]/i,
       // `.generated.<ext>` basename — auto-generated single files.
       /\.generated\.[a-z]+$/i,
       // `.git` internals.
-      /[\/\\]\.git[\/\\]/
+      /[\/\\]\.git[\/\\]/i
     ];
   }
 });
@@ -1305,6 +1305,14 @@ async function safeReadBody(res) {
 function routeEvent(evt) {
   let action;
   switch (evt.kind) {
+    // `generating` is the live browser trigger for variant generation (the
+    // browser POSTs it on configure-submit — see src/browser/index.ts:496 +
+    // src/browser/state-machine.ts:218). `configure` is a legacy alias kept
+    // for back-compat with scripted POSTs against the older vocabulary; the
+    // browser no longer emits it. If the browser vocabulary changes, revisit
+    // this switch + skills/wisp-design/SKILL.md row 39 + docs/agent-loop.md
+    // together (Bug #22).
+    case "generating":
     case "configure":
       action = "generate-variants";
       break;
@@ -1320,7 +1328,6 @@ function routeEvent(evt) {
     case "pick":
     case "cycling":
     case "parameter-change":
-    case "generating":
     case "heartbeat":
     case "error":
       action = "ignore";
@@ -1350,6 +1357,20 @@ async function runPollOnce(args) {
     writeError({
       code: "BAD_FLAG",
       message: `--timeout must be >= ${POLL_LOOP_MIN_TIMEOUT_MS}ms; got ${timeoutMs}`
+    });
+    return EXIT_ARG;
+  }
+  if (timeoutMs > POLL_LOOP_DEFAULT_TIMEOUT_MS) {
+    writeError({
+      code: "BAD_FLAG",
+      message: `--timeout must be <= ${POLL_LOOP_DEFAULT_TIMEOUT_MS}ms; got ${timeoutMs}`
+    });
+    return EXIT_ARG;
+  }
+  if (leaseMs < 1e3) {
+    writeError({
+      code: "BAD_FLAG",
+      message: `--lease must be >= 1000ms; got ${leaseMs}`
     });
     return EXIT_ARG;
   }
@@ -1746,7 +1767,7 @@ function collectScopeVars(rootRule) {
   }
   return out;
 }
-function bakeVars(value, vars) {
+function bakeVars(value, vars, seen = /* @__PURE__ */ new Set()) {
   let out = "";
   let i = 0;
   while (i < value.length) {
@@ -1768,10 +1789,14 @@ function bakeVars(value, vars) {
       const commaIdx = findTopLevelComma(inner);
       const rawName = (commaIdx === -1 ? inner : inner.slice(0, commaIdx)).trim();
       const fallback = commaIdx === -1 ? "" : inner.slice(commaIdx + 1).trim();
-      if (rawName in vars) {
-        out += bakeVars(vars[rawName], vars);
+      if (rawName in vars && !seen.has(rawName)) {
+        out += bakeVars(
+          vars[rawName],
+          vars,
+          new Set(seen).add(rawName)
+        );
       } else if (fallback !== "") {
-        out += bakeVars(fallback, vars);
+        out += bakeVars(fallback, vars, seen);
       } else {
         out += value.slice(i, j + 1);
       }
@@ -2235,6 +2260,7 @@ function findMarkerBlock(content, fileType, group, filter = {}) {
   let openLine = -1;
   let openOffset = -1;
   let openPayload = {};
+  let depth = 0;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const m = pattern.exec(line);
@@ -2244,29 +2270,34 @@ function findMarkerBlock(content, fileType, group, filter = {}) {
     const parsed = parseMarkerBody(bodyMatch);
     if (parsed.kind === null) continue;
     if (groupOfKind(parsed.kind) !== group) continue;
-    if (openLine === -1) {
-      if (!parsed.kind.endsWith("-start")) continue;
-      if (filter.sessionId !== void 0 && parsed.payload.sessionId !== filter.sessionId) {
-        continue;
+    if (parsed.kind.endsWith("-start")) {
+      if (openLine === -1) {
+        if (filter.sessionId !== void 0 && parsed.payload.sessionId !== filter.sessionId) {
+          continue;
+        }
+        if (filter.targetId !== void 0 && parsed.payload.targetId !== filter.targetId) {
+          continue;
+        }
+        openLine = i;
+        openOffset = lineOffsets[i];
+        openPayload = parsed.payload;
       }
-      if (filter.targetId !== void 0 && parsed.payload.targetId !== filter.targetId) {
-        continue;
-      }
-      openLine = i;
-      openOffset = lineOffsets[i];
-      openPayload = parsed.payload;
+      depth += 1;
     } else {
-      if (!parsed.kind.endsWith("-end")) continue;
-      const endLine = i;
-      const nextStart = i + 1 < lines.length ? lineOffsets[i + 1] : content.length;
-      return {
-        startLine: openLine,
-        endLine,
-        startOffset: openOffset,
-        endOffset: nextStart,
-        group,
-        payload: openPayload
-      };
+      if (openLine === -1) continue;
+      depth -= 1;
+      if (depth === 0) {
+        const endLine = i;
+        const nextStart = i + 1 < lines.length ? lineOffsets[i + 1] : content.length;
+        return {
+          startLine: openLine,
+          endLine,
+          startOffset: openOffset,
+          endOffset: nextStart,
+          group,
+          payload: openPayload
+        };
+      }
     }
   }
   return null;
@@ -3672,6 +3703,50 @@ function runTailwindClassMatchers(content, ctx) {
   }
   return { violations, defaultBlueClassHits };
 }
+function runJsxInlineStyleMatchers(content) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  function push(v) {
+    const key = `${v.ruleId}:${v.location?.line ?? 0}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  }
+  JSX_BACKDROP_FILTER_RE.lastIndex = 0;
+  let m;
+  while ((m = JSX_BACKDROP_FILTER_RE.exec(content)) !== null) {
+    const before = content.slice(Math.max(0, m.index - 100), m.index);
+    const after = content.slice(m.index, Math.min(content.length, m.index + 100));
+    if (/wisp-justify/.test(before) || /wisp-justify/.test(after)) continue;
+    const { line, column } = lineColAt(content, m.index);
+    push({
+      ruleId: "default-glassmorphism",
+      severity: "fail",
+      message: "glassmorphism via JSX inline style (backdropFilter: blur) \u2014 default AI vibe.",
+      suggestedFix: "Add `/* wisp-justify: <reason> */` within 100 chars, or remove the backdropFilter.",
+      location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+    });
+    if (m.index === JSX_BACKDROP_FILTER_RE.lastIndex) JSX_BACKDROP_FILTER_RE.lastIndex += 1;
+  }
+  JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex = 0;
+  while ((m = JSX_BACKGROUND_CLIP_TEXT_RE.exec(content)) !== null) {
+    const start2 = Math.max(0, m.index - 200);
+    const end2 = Math.min(content.length, m.index + m[0].length + 200);
+    const window = content.slice(start2, end2);
+    if (JSX_COLOR_TRANSPARENT_RE.test(window)) {
+      const { line, column } = lineColAt(content, m.index);
+      push({
+        ruleId: "gradient-text-headline",
+        severity: "fail",
+        message: "gradient text via JSX inline style (backgroundClip: 'text' + color: 'transparent') \u2014 kills scanability.",
+        suggestedFix: "Use a solid colour. Gradient text only for purely decorative, non-interactive accents.",
+        location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+      });
+    }
+    if (m.index === JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex) JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex += 1;
+  }
+  return out;
+}
 function aggregateRoundNumberWhitespace(content, _ctx) {
   let totalCount = 0;
   let roundCount = 0;
@@ -3850,6 +3925,7 @@ async function runAntiSlop(css, ctx) {
     const tw = runTailwindClassMatchers(sourceForClassScan, aggCtx);
     for (const v of tw.violations) violations.push(v);
     parkedDefaultBlueClassHits = tw.defaultBlueClassHits;
+    for (const v of runJsxInlineStyleMatchers(sourceForClassScan)) violations.push(v);
   }
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;
@@ -4038,12 +4114,15 @@ function formatWarnMessage(hits) {
   }
   return [head, ...lines].join("\n");
 }
-var CLASS_ATTR_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
+var CLASS_ATTR_RE, JSX_BACKDROP_FILTER_RE, JSX_BACKGROUND_CLIP_TEXT_RE, JSX_COLOR_TRANSPARENT_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
 var init_anti_slop_linter = __esm({
   "src/verify/anti-slop-linter.ts"() {
     "use strict";
     init_verify();
     CLASS_ATTR_RE = /\b(?:className|class)\s*=\s*"([^"]*)"/g;
+    JSX_BACKDROP_FILTER_RE = /\bbackdropFilter\s*:\s*['"][^'"]*\bblur\(\s*(?!0(?:px)?\s*\))[^)]+\)/g;
+    JSX_BACKGROUND_CLIP_TEXT_RE = /\b(?:backgroundClip|WebkitBackgroundClip)\s*:\s*['"]\s*text\s*['"]/g;
+    JSX_COLOR_TRANSPARENT_RE = /\bcolor\s*:\s*['"]\s*transparent\s*['"]/;
     ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
     ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
     ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
@@ -4809,6 +4888,18 @@ async function runConsoleScan(opts) {
         aggregate.push(...scanText(text, "static-script"));
       }
     }
+    const noInputs = opts.sessionLogPath === void 0 && opts.bridgeUrl === void 0 && (opts.cssOrHtml === void 0 || !/<script\b/i.test(opts.cssOrHtml));
+    if (noInputs && aggregate.length === 0) {
+      return {
+        name: "console-scan",
+        severity: "pass",
+        durationMs: Date.now() - startedAt,
+        skipped: {
+          reason: "error",
+          detail: "no session log, bridge, or <script> content to scan"
+        }
+      };
+    }
     const severity = aggregate.some((c) => SEVERE_RE.test(c.message)) ? "fail" : aggregate.length > 0 ? "warn" : "pass";
     return {
       name: "console-scan",
@@ -4972,8 +5063,7 @@ async function runTabOrder(opts) {
       dom.window.close();
     } catch {
     }
-    const hasTrapLeak = violations.some((v) => v.kind === "focus-trap-leak");
-    const severity = hasTrapLeak ? "fail" : violations.length > 0 ? "warn" : "pass";
+    const severity = violations.length > 0 ? "warn" : "pass";
     const durationMs = Date.now() - startedAt;
     if (durationMs > TAB_ORDER_BUDGET_MS) {
     }
@@ -5143,7 +5233,19 @@ async function inlineLaunch(pw, url) {
     ]
   });
   const context = await browser.newContext();
-  return { browser, context };
+  return {
+    newPage: () => context.newPage(),
+    async close() {
+      try {
+        await context.close();
+      } catch {
+      }
+      try {
+        await browser.close();
+      } catch {
+      }
+    }
+  };
 }
 async function runMultiViewport(opts) {
   const startedAt = Date.now();
@@ -5192,24 +5294,16 @@ async function runMultiViewport(opts) {
     };
   }
   const sandbox = await loadSandbox2();
-  let browser = null;
-  let context = null;
+  let handle = null;
   try {
-    if (sandbox !== null) {
-      const launched = await sandbox.safeBrowserLaunch(opts.livePreviewUrl, {
-        timeoutMs: MULTI_VIEWPORT_BUDGET_MS - 500
-      });
-      browser = launched.browser;
-      context = launched.context;
-    } else {
-      const launched = await inlineLaunch(pw, opts.livePreviewUrl);
-      browser = launched.browser;
-      context = launched.context;
-    }
+    handle = sandbox !== null ? await sandbox.safeBrowserLaunch({
+      livePreviewUrl: opts.livePreviewUrl,
+      budgetMs: MULTI_VIEWPORT_BUDGET_MS - 500
+    }) : await inlineLaunch(pw, opts.livePreviewUrl);
     const screenshots = [];
     for (const vp of DEFAULT_VIEWPORTS) {
       if (Date.now() - budgetBase > MULTI_VIEWPORT_BUDGET_MS - 400) break;
-      const page = await context.newPage();
+      const page = await handle.newPage();
       try {
         await page.setViewportSize({ width: vp.w, height: vp.h });
         await page.goto(opts.livePreviewUrl, {
@@ -5255,15 +5349,9 @@ async function runMultiViewport(opts) {
       }
     };
   } finally {
-    if (context !== null) {
+    if (handle !== null) {
       try {
-        await context.close();
-      } catch {
-      }
-    }
-    if (browser !== null) {
-      try {
-        await browser.close();
+        await handle.close();
       } catch {
       }
     }
@@ -5411,7 +5499,11 @@ async function run(ctx) {
   const checks = MODE_CHECK_SETS[mode];
   const budgetMs = MODE_TIMING_BUDGET_MS[mode];
   const promises = checks.map(
-    (name) => runWithTimeout(name, dispatchCheck(name, ctx), budgetForCheck(name, mode))
+    (name) => runWithTimeout(
+      name,
+      dispatchCheck(name, ctx),
+      Math.min(budgetForCheck(name, mode), budgetMs)
+    )
   );
   const settled = await Promise.allSettled(promises);
   const resolved = settled.map((s, i) => {
@@ -5549,13 +5641,21 @@ async function injectLiveScript(filePath, opts, modOpts) {
     scriptSrc: parsedOpts.inline ? void 0 : `${parsedOpts.bridgeUrl}/live.js?token=${encodeURIComponent(parsedOpts.token)}`,
     inline: parsedOpts.inline
   });
+  const { startOffset, endOffset, startLine, endLine } = chooseInsertionPoint(
+    canonical,
+    parsedOpts.preferredAnchor,
+    fileType
+  );
+  const atEof = startOffset === canonical.length;
+  const needsLeadingNl = atEof && canonical.length > 0 && canonical[canonical.length - 1] !== "\n";
   const startBody = serializeMarkerBody("inject-start", {
     injectId: marker.injectId,
     insertedAt: marker.insertedAt,
     bridgeUrl: marker.bridgeUrl,
     token: marker.token,
     beforeHash: marker.beforeHash,
-    inline: marker.inline
+    inline: marker.inline,
+    eofPrefixNl: needsLeadingNl
   });
   const endBody = serializeMarkerBody("inject-end", {
     injectId: marker.injectId
@@ -5565,13 +5665,7 @@ async function injectLiveScript(filePath, opts, modOpts) {
   const block = `${syntax.open(startBody)}
 ${scriptTag}
 ${syntax.close(endBody)}`;
-  const { startOffset, endOffset, startLine, endLine } = chooseInsertionPoint(
-    canonical,
-    fileType,
-    parsedOpts.preferredAnchor,
-    block
-  );
-  const next = canonical.slice(0, startOffset) + block + "\n" + canonical.slice(endOffset);
+  const next = canonical.slice(0, startOffset) + (needsLeadingNl ? "\n" : "") + block + "\n" + canonical.slice(endOffset);
   const final = applyEol(next, eol);
   await atomicWrite(filePath, final);
   const afterHash = sha256Hex(final);
@@ -5623,8 +5717,10 @@ async function removeLiveScript(filePath, modOpts) {
   const parsed = payloadMatch ? parseMarkerBody(payloadMatch[1] ?? "") : { payload: {} };
   const injectId = parsed.payload.injectId ?? "";
   const expectedBeforeHash = parsed.payload.beforeHash ?? "";
-  const next = expandReplaceRange(canonical, block, "", eol);
-  const collapsed = collapseDoubleBlank(next, block.startOffset);
+  const eofPrefixNl = parsed.payload.eofPrefixNl === "true";
+  const removeBlock = eofPrefixNl && block.startOffset > 0 && canonical[block.startOffset - 1] === "\n" ? { ...block, startOffset: block.startOffset - 1 } : block;
+  const next = expandReplaceRange(canonical, removeBlock, "", eol);
+  const collapsed = collapseDoubleBlank(next, removeBlock.startOffset);
   const restoredHash = sha256First256Bytes(collapsed);
   const byteEquivalent = expectedBeforeHash !== "" && restoredHash === expectedBeforeHash;
   const final = applyEol(collapsed, eol);
@@ -5653,22 +5749,21 @@ async function removeLiveScript(filePath, modOpts) {
     restoredByteEquivalent: byteEquivalent
   };
 }
-function chooseInsertionPoint(canonical, fileType, _preferred, block) {
+function chooseInsertionPoint(canonical, _preferred, fileType) {
   if (fileType === "html") {
     const idx = canonical.search(/<\/head\s*>/i);
     if (idx !== -1) {
-      return offsetToInsertionPoint(canonical, idx);
+      return offsetToInsertionPoint(canonical, lineStartOffset2(canonical, idx));
     }
     const bodyIdx = canonical.search(/<\/body\s*>/i);
     if (bodyIdx !== -1) {
-      return offsetToInsertionPoint(canonical, bodyIdx);
+      return offsetToInsertionPoint(
+        canonical,
+        lineStartOffset2(canonical, bodyIdx)
+      );
     }
   }
-  let eof = canonical.length;
-  if (canonical.length > 0 && canonical[canonical.length - 1] !== "\n") {
-    eof = canonical.length;
-  }
-  void block;
+  const eof = canonical.length;
   return {
     startOffset: eof,
     endOffset: eof,
@@ -5690,6 +5785,10 @@ function lineOfOffset2(s, offset) {
     if (s[i] === "\n") line += 1;
   }
   return line;
+}
+function lineStartOffset2(s, off) {
+  const nl = s.lastIndexOf("\n", off - 1);
+  return nl === -1 ? 0 : nl + 1;
 }
 function collapseDoubleBlank(s, near) {
   const lo = Math.max(0, near - 2);
@@ -6088,6 +6187,9 @@ function safeJson(s) {
     return { ok: false, error: err.message };
   }
 }
+function withAuthoritativeToken(valueObj, token) {
+  return { ...valueObj, token };
+}
 function parseCursor(cursor) {
   if (cursor === void 0 || cursor.length === 0) return 0;
   const m = /^seq-(\d+)-/.exec(cursor);
@@ -6165,26 +6267,39 @@ async function startBridgeServer(opts) {
       slicedAt: Date.now() - w.startedAt
     });
   };
+  const releaseWaiter = (w) => {
+    if (!pollWaiters.has(w)) return;
+    pollWaiters.delete(w);
+    clearTimeout(w.timer);
+  };
   const longPoll = (sinceSeq, timeoutMs) => {
     const cap = Math.min(Math.max(timeoutMs, 0), LONG_POLL_CAP_MS);
     const ready = eventsSince(sinceSeq);
     if (ready.length > 0) {
       const last = ready[ready.length - 1];
-      return Promise.resolve({
-        events: ready.map((q) => q.event),
-        cursor: last !== void 0 ? last.cursor : `seq-${seqCounter}-${sessionId2}`,
-        slicedAt: 0
-      });
+      return {
+        promise: Promise.resolve({
+          events: ready.map((q) => q.event),
+          cursor: last !== void 0 ? last.cursor : `seq-${seqCounter}-${sessionId2}`,
+          slicedAt: 0
+        }),
+        cancel: () => {
+        }
+      };
     }
-    return new Promise((res) => {
-      const waiter = {
+    let waiter;
+    const promise = new Promise((res) => {
+      waiter = {
         resolve: res,
         sinceSeq,
         startedAt: Date.now(),
-        timer: setTimeout(() => deliverWaiter(waiter), cap)
+        // .unref() so a stray waiter timer never keeps the process alive past
+        // shutdown if a poll outlives stopServer's drain.
+        timer: setTimeout(() => deliverWaiter(waiter), cap).unref()
       };
       pollWaiters.add(waiter);
     });
+    return { promise, cancel: () => releaseWaiter(waiter) };
   };
   const handleHealth = (res) => {
     sendJson(res, 200, {
@@ -6389,13 +6504,15 @@ async function startBridgeServer(opts) {
     req.on("error", cleanup);
   };
   const handleGetPoll = async (req, res, q) => {
-    const timeout = q.timeout ?? LONG_POLL_DEFAULT_LEASE_MS;
+    const timeout = Number.isFinite(q.timeout) ? q.timeout : LONG_POLL_DEFAULT_LEASE_MS;
     const sinceSeq = parseCursor(q.cursor);
     const aborted = { v: false };
+    const { promise, cancel } = longPoll(sinceSeq, timeout);
     req.on("close", () => {
       aborted.v = true;
+      cancel();
     });
-    const response = await longPoll(sinceSeq, timeout);
+    const response = await promise;
     if (aborted.v) return;
     sendJson(res, 200, response);
   };
@@ -6413,7 +6530,7 @@ async function startBridgeServer(opts) {
       return;
     }
     const valueObj = typeof parsedJson.value === "object" && parsedJson.value !== null ? parsedJson.value : {};
-    const withToken = { token, ...valueObj };
+    const withToken = withAuthoritativeToken(valueObj, token);
     const parsed = LongPollRequestSchema.safeParse(withToken);
     let timeoutMs;
     let sinceSeq;
@@ -6426,10 +6543,12 @@ async function startBridgeServer(opts) {
       sinceSeq = parseCursor(parsed.data.cursor);
     }
     const aborted = { v: false };
+    const { promise, cancel } = longPoll(sinceSeq, timeoutMs);
     req.on("close", () => {
       aborted.v = true;
+      cancel();
     });
-    const response = await longPoll(sinceSeq, timeoutMs);
+    const response = await promise;
     if (aborted.v) return;
     sendJson(res, 200, response);
   };
@@ -6561,6 +6680,10 @@ async function startBridgeServer(opts) {
     }),
     stop: (graceMs) => stopServer(graceMs)
   };
+  Object.defineProperty(handle, "pendingWaiters", {
+    value: () => pollWaiters.size,
+    enumerable: false
+  });
   return handle;
 }
 
@@ -6670,22 +6793,22 @@ var CONTAINER_VARIANTS = {
   spacious: [
     BASELINE,
     {
-      css: `:scope { padding: 2em !important; gap: 1em !important; }`,
+      css: `:scope { /* @param: kind=range min=16 max=64 step=4 label="padding" */ --wisp-pad: 32px; padding: var(--wisp-pad) !important; gap: 1em !important; }`,
       rationale: "Generous padding: doubles internal spacing \u2014 feels premium and unhurried."
     },
     {
-      css: `:scope { padding: 3em !important; gap: 1.5em !important; }`,
+      css: `:scope { /* @param: kind=range min=16 max=64 step=4 label="padding" */ --wisp-pad: 48px; padding: var(--wisp-pad) !important; gap: 1.5em !important; }`,
       rationale: "Maximum breathing room: even more space for content to settle."
     }
   ],
   compact: [
     BASELINE,
     {
-      css: `:scope { padding: 0.75em !important; gap: 0.25em !important; }`,
+      css: `:scope { /* @param: kind=range min=0 max=24 step=2 label="padding" */ --wisp-pad: 12px; padding: var(--wisp-pad) !important; gap: 0.25em !important; }`,
       rationale: "Compact: tighter internal spacing \u2014 suits dense info or small cards."
     },
     {
-      css: `:scope { padding: 0.5em !important; gap: 0 !important; }`,
+      css: `:scope { /* @param: kind=range min=0 max=24 step=2 label="padding" */ --wisp-pad: 8px; padding: var(--wisp-pad) !important; gap: 0 !important; }`,
       rationale: "Ultra-tight: minimal padding, edge-to-edge content."
     }
   ],
@@ -6859,22 +6982,22 @@ var TEXT_VARIANTS = {
   "weight-heavier": [
     BASELINE,
     {
-      css: `:scope, :scope * { font-weight: 600 !important; }`,
+      css: `:scope { /* @param: kind=range min=300 max=900 step=100 label="weight" */ --wisp-weight: 600; } :scope, :scope * { font-weight: var(--wisp-weight) !important; }`,
       rationale: "Semi-bold: weight 600 \u2014 substantial without shouting."
     },
     {
-      css: `:scope, :scope * { font-weight: 800 !important; letter-spacing: -0.02em !important; }`,
+      css: `:scope { /* @param: kind=range min=300 max=900 step=100 label="weight" */ --wisp-weight: 800; } :scope, :scope * { font-weight: var(--wisp-weight) !important; letter-spacing: -0.02em !important; }`,
       rationale: "Display heavy: weight 800 + tight tracking."
     }
   ],
   "weight-lighter": [
     BASELINE,
     {
-      css: `:scope, :scope * { font-weight: 300 !important; }`,
+      css: `:scope { /* @param: kind=range min=100 max=500 step=100 label="weight" */ --wisp-weight: 300; } :scope, :scope * { font-weight: var(--wisp-weight) !important; }`,
       rationale: "Light: weight 300 reads as delicate."
     },
     {
-      css: `:scope, :scope * { font-weight: 200 !important; letter-spacing: 0.02em !important; }`,
+      css: `:scope { /* @param: kind=range min=100 max=500 step=100 label="weight" */ --wisp-weight: 200; } :scope, :scope * { font-weight: var(--wisp-weight) !important; letter-spacing: 0.02em !important; }`,
       rationale: "Hairline: weight 200 + wider tracking \u2014 minimalist."
     }
   ],
@@ -6903,22 +7026,22 @@ var TEXT_VARIANTS = {
   spacious: [
     BASELINE,
     {
-      css: `:scope, :scope * { line-height: 1.6 !important; letter-spacing: 0.01em !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2.4 step=0.1 label="line height" */ --wisp-leading: 1.6; } :scope, :scope * { line-height: var(--wisp-leading) !important; letter-spacing: 0.01em !important; }`,
       rationale: "Open reading: 1.6 line-height + slight tracking \u2014 easier to scan."
     },
     {
-      css: `:scope, :scope * { line-height: 1.8 !important; letter-spacing: 0.03em !important; word-spacing: 0.1em !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2.4 step=0.1 label="line height" */ --wisp-leading: 1.8; } :scope, :scope * { line-height: var(--wisp-leading) !important; letter-spacing: 0.03em !important; word-spacing: 0.1em !important; }`,
       rationale: "Long-form: 1.8 line-height + wider tracking \u2014 magazine reading feel."
     }
   ],
   compact: [
     BASELINE,
     {
-      css: `:scope, :scope * { line-height: 1.25 !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2 step=0.05 label="line height" */ --wisp-leading: 1.25; } :scope, :scope * { line-height: var(--wisp-leading) !important; }`,
       rationale: "Tight: 1.25 line-height \u2014 denser block of type."
     },
     {
-      css: `:scope, :scope * { line-height: 1.1 !important; letter-spacing: -0.01em !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2 step=0.05 label="line height" */ --wisp-leading: 1.1; } :scope, :scope * { line-height: var(--wisp-leading) !important; letter-spacing: -0.01em !important; }`,
       rationale: "Ultra-tight: 1.1 line-height + tighter tracking \u2014 micro-typography."
     }
   ],

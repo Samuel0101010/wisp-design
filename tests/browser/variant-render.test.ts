@@ -163,6 +163,51 @@ describe("renderVariants — visibility & overrides", () => {
   });
 });
 
+describe("renderVariants — CSS isolation / breakout (finding #1, #5)", () => {
+  // jsdom does NOT run @scope cascade, so we assert the *assembled style text*
+  // cannot close its @scope rule early. A stray `}` in agent-supplied CSS must
+  // not produce a top-level rule that escapes variant isolation.
+  it("does not let an unbalanced `}` inject a global rule", () => {
+    const { target } = setupTarget();
+    const hostile: Variant[] = [
+      {
+        id: "v0",
+        css: 'color:red } body { display:none !important } [x] {',
+        cssVars: {},
+        rationale: "hostile",
+      },
+    ];
+    renderVariants({ target, variants: hostile, sessionId, sanitize: sanitizeModule });
+    const style = document.head.querySelector<HTMLStyleElement>(
+      `style[${WISP_CSS_DATA_ATTRIBUTE}="${sessionId}"]`,
+    );
+    const css = style?.textContent ?? "";
+    // The hostile body breakout must not survive as a literal rule head.
+    expect(css).not.toMatch(/}\s*body\s*\{/);
+  });
+
+  it("strips FORBIDDEN substrings (</style, <script, @import, expression()", () => {
+    const { target } = setupTarget();
+    const hostile: Variant[] = [
+      {
+        id: "v0",
+        css: ':scope { color:red; } </style><script>x()</script> @import url(evil); expression(alert(1))',
+        cssVars: {},
+        rationale: "hostile",
+      },
+    ];
+    renderVariants({ target, variants: hostile, sessionId, sanitize: sanitizeModule });
+    const css =
+      document.head.querySelector<HTMLStyleElement>(
+        `style[${WISP_CSS_DATA_ATTRIBUTE}="${sessionId}"]`,
+      )?.textContent ?? "";
+    expect(css).not.toContain("</style");
+    expect(css).not.toContain("<script");
+    expect(css).not.toContain("@import");
+    expect(css).not.toContain("expression(");
+  });
+});
+
 describe("renderVariants — teardown", () => {
   it("restores the original node to its parent and removes wrapper + style", () => {
     const { target, node, parent } = setupTarget();

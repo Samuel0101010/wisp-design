@@ -6,7 +6,9 @@
 //   2. `_sandbox.ts` — loopback URL guard, safeBrowserLaunch rejection codes.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -196,4 +198,62 @@ describe("runMultiViewport — skip semantics", () => {
       expect(["pass", "warn"]).toContain(res.severity);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// runMultiViewport — REAL launch happy path against a loopback server.
+//
+// Regression guard for the signature/return-shape bug: the old code called
+// `safeBrowserLaunch(opts.livePreviewUrl, {timeoutMs})` (positional string)
+// and read `launched.browser`/`launched.context`, so the sandbox threw
+// INVALID_URL and the launch produced severity:"warn" with no screenshots
+// against a perfectly-good loopback URL. This test asserts a positive launch.
+// ---------------------------------------------------------------------------
+
+describe("runMultiViewport — real launch against loopback server", () => {
+  let projectRoot: string;
+  let server: Server | null = null;
+  let port = 0;
+
+  beforeEach(async () => {
+    projectRoot = mkdtempSync(join(tmpdir(), "wisp-mv-live-"));
+    server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!DOCTYPE html><html><body><h1>hi</h1></body></html>");
+    });
+    await new Promise<void>((resolve) => {
+      server!.listen(0, "127.0.0.1", () => resolve());
+    });
+    port = (server!.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    if (server !== null) {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = null;
+    }
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("captures screenshots (pass, no skip) when playwright+chromium present", async () => {
+    const hasPw = await playwrightAvailable();
+    const hasChromium = hasPw ? await chromiumAvailable() : false;
+    if (!hasPw || !hasChromium) {
+      return; // optional-dep absent — covered by the skip-semantics suite.
+    }
+    const res = await runMultiViewport({
+      livePreviewUrl: `http://127.0.0.1:${port}`,
+      sessionId: "live-sid",
+      variantId: "v0",
+      projectRoot,
+      // Generous budget: cold chromium boot can exceed the default 3500ms cap.
+      budgetStartedAt: Date.now() + 60_000,
+    });
+    expect(res.severity).toBe("pass");
+    expect(res.skipped).toBeUndefined();
+    expect((res.screenshots ?? []).length).toBeGreaterThan(0);
+    for (const shot of res.screenshots ?? []) {
+      expect(existsSync(shot.path)).toBe(true);
+    }
+  }, 90_000);
 });

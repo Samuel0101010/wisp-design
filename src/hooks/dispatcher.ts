@@ -27,10 +27,12 @@
 //  10. on hard-ban:
 //        - if process.env.WISP_DESIGN_STRICT === "1":
 //            stdout.write(JSON.stringify({
-//              permissionDecision: "block",
-//              message: "wisp-design anti-slop blocked: <rule citation>"
+//              decision: "block",
+//              reason: "wisp-design anti-slop blocked: <rule citation>"
 //            }))
-//          (Claude Code reads this JSON and surfaces it as a block decision.)
+//          (The Stop event honors the top-level { decision, reason } shape;
+//          permissionDecision/message is the PreToolUse schema and is ignored
+//          by Stop. Claude Code reads this JSON and blocks the turn.)
 //        - else: stderr.write("wisp-design anti-slop warn: <citation>\n")
 //          (non-blocking; user sees a warning but the turn proceeds.)
 //  11. ALWAYS exit 0 unless strict-block path was taken (also exit 0 there
@@ -168,10 +170,18 @@ async function runStopHook(): Promise<number> {
     const { runAntiSlopOnFiles, formatBlockMessage, formatWarnMessage } =
       await import("../verify/anti-slop-linter.js");
 
+    // Re-anchor the linter's budget AFTER the git read. `started` already
+    // includes git startup latency (147-271ms on Windows); anchoring the
+    // linter to it would blow the 50ms inner budget on iteration 0 and read
+    // zero files. Hand the linter a fresh start plus whatever remains under
+    // the hook ceiling (with the tail reserve held back for the emit + exit).
+    const remainingMs =
+      EFFECTIVE_STOP_HOOK_LIMIT_MS - (Date.now() - started) - STOP_HOOK_TAIL_RESERVE_MS;
     const result = await runAntiSlopOnFiles(changedFiles, {
       mode: "stop-hook",
       projectRoot: process.cwd(),
-      budgetStartedAt: started,
+      budgetStartedAt: Date.now(),
+      perCallBudgetMs: Math.max(20, remainingMs),
     });
 
     const hardBanHits: AntiSlopViolation[] =
@@ -183,12 +193,15 @@ async function runStopHook(): Promise<number> {
 
     if (hardBanHits.length === 0) return 0;
 
-    // 5. Emit. Strict mode → permissionDecision JSON on stdout (Claude Code
+    // 5. Emit. Strict mode → Stop-hook block JSON on stdout (Claude Code
     //    reads it and blocks the turn). Default → stderr warn, exit 0.
+    //    The Stop event honors only the top-level { decision, reason } shape;
+    //    permissionDecision/message is the PreToolUse schema and is silently
+    //    ignored by Stop, so the block would never fire.
     if (process.env.WISP_DESIGN_STRICT === "1") {
       const payload = JSON.stringify({
-        permissionDecision: "block",
-        message: formatBlockMessage(hardBanHits),
+        decision: "block",
+        reason: formatBlockMessage(hardBanHits),
       });
       process.stdout.write(`${payload}\n`);
       return 0;

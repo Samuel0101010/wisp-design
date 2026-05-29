@@ -120,8 +120,20 @@ async function main(): Promise<number> {
     const spec = rel;
     try {
       return (await import(spec)) as Record<string, unknown>;
-    } catch {
-      return null;
+    } catch (err) {
+      // Only genuine module-absence maps to "not yet implemented". A real
+      // failure inside a shipped module (ReferenceError, bad transitive
+      // import, top-level schema build error, …) must NOT be masked as a
+      // missing feature — rethrow it so main().catch() surfaces the actual
+      // message with a non-zero exit.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const msg = err instanceof Error ? err.message : "";
+      const isAbsent =
+        code === "ERR_MODULE_NOT_FOUND" ||
+        code === "ENOENT" ||
+        /Cannot find module/i.test(msg);
+      if (isAbsent) return null;
+      throw err;
     }
   };
   const callRunner = async (

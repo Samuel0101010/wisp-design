@@ -29,18 +29,20 @@ Slicing rule: `pollOnce` returns `shouldRetry: true` whenever the bridge cut the
 
 | `event.kind`         | Action                       | Skill loaded                                                          |
 | -------------------- | ---------------------------- | --------------------------------------------------------------------- |
-| `configure`          | generate-variants            | `skills/reference/live.md` + `skills/policy/anti-slop.md` (always)    |
+| `generating`         | generate-variants            | `skills/reference/live.md` + `skills/policy/anti-slop.md` (always)    |
+| `configure`          | generate-variants (legacy)   | legacy alias — the browser no longer emits this; kept for scripted POSTs |
 | `accept`             | write-accept                 | `Bash("wisp-design accept --session SID --variant VID")` (Phase 3)    |
 | `discard`            | clean-discard                | `Bash("wisp-design discard --session SID")` (Phase 3)                 |
 | `annotation`         | log-annotation               | append entry to `.wisp/sessions/<SID>.jsonl`                          |
 | `pick`               | ignore                       | (browser state telemetry — no agent action)                           |
 | `cycling`            | ignore                       | (echo of own post — heard once via at-least-once delivery)            |
 | `parameter-change`   | ignore                       | (slider tick — no agent round-trip by design)                         |
-| `generating`         | ignore                       | (status echo)                                                         |
 | `heartbeat`          | ignore                       | (15 s keepalive)                                                      |
 | `error`              | ignore (log)                 | (bridge or browser-side error already surfaced)                       |
 
-When the model handles a `configure` event, it MUST emit `requestedVariantCount` variants via:
+> **Bug #22 / browser vocabulary:** the browser POSTs `generating` (carrying `freeText` + `variantCount`) on configure-submit — it never emits `configure`. `generating` is therefore the live trigger; `configure` is a back-compat alias only. If the browser vocabulary changes, revisit this table, `routeEvent` (`src/agent/poll-loop.ts`), and `docs/agent-loop.md` together.
+
+When the model handles a `generating` event, it MUST emit `requestedVariantCount` variants via:
 
 ```
 Bash("wisp-design post-event --kind cycling --payload <json>")
@@ -50,7 +52,7 @@ where `<json>` is a `VariantGenerationResponse` (see `src/contracts/agent.ts`).
 
 ## Always-loaded sub-skills
 
-Three sub-skills are loaded into context for every `configure` event:
+Three sub-skills are loaded into context for every `generating` event:
 
 1. **`skills/reference/live.md`** — the variant-generation prompt. Defines the 5 axes (`hierarchy`, `layout`, `typography`, `color`, `density`), the distinct-variants rule, the output CSS shape (`@scope` + tunable CSS-vars), and three worked examples.
 2. **`skills/policy/anti-slop.md`** — the hard-bans and soft-warnings. Every generated variant is filtered against the hard-ban list before posting. The rationale string MUST cite the rule when the user's `freeText` brushed against one (e.g. "User asked for gradient, but anti-slop bans rainbow text → emitted a single-stop accent gradient on the border instead").

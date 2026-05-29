@@ -120,6 +120,46 @@ describe("findMarkerBlock", () => {
     const block = findMarkerBlock(content, "tsx", "inject");
     expect(block).toBeNull();
   });
+
+  // REGRESSION — nested same-session/same-target wrap. wrapVariantBlock allows
+  // stacking, so the SAME session+target can be wrapped twice (outer-start,
+  // inner-start, inner-end, outer-end). Without depth tracking, the scanner
+  // paired outer-start with the FIRST -end (inner-end), returning a truncated,
+  // unbalanced block; splicing that range corrupts the source. The finder must
+  // pair the OUTER -start with the OUTER -end.
+  it("pairs the outer markers for a nested same-target wrap (depth tracking)", () => {
+    const s = "sessN";
+    const t = "tN";
+    const startBody = (extra: string) =>
+      `{/* wisp-variants-start:sessionId=${s} targetId=${t}${extra} */}`;
+    const endBody = `{/* wisp-variants-end:sessionId=${s} targetId=${t} */}`;
+    const content = [
+      "const before = 1;",
+      startBody(" outer=1"), // line 1 — outer start
+      startBody(" inner=1"), // line 2 — inner start
+      "  <div data-wisp-variant=\"0\">inner</div>",
+      endBody, // line 4 — inner end
+      "  <div data-wisp-variant=\"0\">outer</div>",
+      endBody, // line 6 — outer end
+      "const after = 2;",
+    ].join("\n") + "\n";
+
+    const block = findMarkerBlock(content, "tsx", "variants", {
+      sessionId: s,
+      targetId: t,
+    });
+    expect(block).not.toBeNull();
+    if (!block) return;
+    // Outer start is line 1; the balanced outer end is line 6 (NOT inner's
+    // line 4). The sliced range must contain equal start/end marker counts.
+    expect(block.startLine).toBe(1);
+    expect(block.endLine).toBe(6);
+    const sliced = content.slice(block.startOffset, block.endOffset);
+    const starts = sliced.match(/wisp-variants-start/g) ?? [];
+    const ends = sliced.match(/wisp-variants-end/g) ?? [];
+    expect(starts.length).toBe(ends.length);
+    expect(starts.length).toBe(2);
+  });
 });
 
 // ----------------------------- extractVariant -----------------------------

@@ -317,6 +317,50 @@ function runTailwindClassMatchers(content, ctx) {
   }
   return { violations, defaultBlueClassHits };
 }
+function runJsxInlineStyleMatchers(content) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  function push(v) {
+    const key = `${v.ruleId}:${v.location?.line ?? 0}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  }
+  JSX_BACKDROP_FILTER_RE.lastIndex = 0;
+  let m;
+  while ((m = JSX_BACKDROP_FILTER_RE.exec(content)) !== null) {
+    const before = content.slice(Math.max(0, m.index - 100), m.index);
+    const after = content.slice(m.index, Math.min(content.length, m.index + 100));
+    if (/wisp-justify/.test(before) || /wisp-justify/.test(after)) continue;
+    const { line, column } = lineColAt(content, m.index);
+    push({
+      ruleId: "default-glassmorphism",
+      severity: "fail",
+      message: "glassmorphism via JSX inline style (backdropFilter: blur) \u2014 default AI vibe.",
+      suggestedFix: "Add `/* wisp-justify: <reason> */` within 100 chars, or remove the backdropFilter.",
+      location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+    });
+    if (m.index === JSX_BACKDROP_FILTER_RE.lastIndex) JSX_BACKDROP_FILTER_RE.lastIndex += 1;
+  }
+  JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex = 0;
+  while ((m = JSX_BACKGROUND_CLIP_TEXT_RE.exec(content)) !== null) {
+    const start = Math.max(0, m.index - 200);
+    const end = Math.min(content.length, m.index + m[0].length + 200);
+    const window = content.slice(start, end);
+    if (JSX_COLOR_TRANSPARENT_RE.test(window)) {
+      const { line, column } = lineColAt(content, m.index);
+      push({
+        ruleId: "gradient-text-headline",
+        severity: "fail",
+        message: "gradient text via JSX inline style (backgroundClip: 'text' + color: 'transparent') \u2014 kills scanability.",
+        suggestedFix: "Use a solid colour. Gradient text only for purely decorative, non-interactive accents.",
+        location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+      });
+    }
+    if (m.index === JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex) JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex += 1;
+  }
+  return out;
+}
 function aggregateRoundNumberWhitespace(content, _ctx) {
   let totalCount = 0;
   let roundCount = 0;
@@ -495,6 +539,7 @@ async function runAntiSlop(css, ctx) {
     const tw = runTailwindClassMatchers(sourceForClassScan, aggCtx);
     for (const v of tw.violations) violations.push(v);
     parkedDefaultBlueClassHits = tw.defaultBlueClassHits;
+    for (const v of runJsxInlineStyleMatchers(sourceForClassScan)) violations.push(v);
   }
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;
@@ -683,12 +728,15 @@ function formatWarnMessage(hits) {
   }
   return [head, ...lines].join("\n");
 }
-var CLASS_ATTR_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
+var CLASS_ATTR_RE, JSX_BACKDROP_FILTER_RE, JSX_BACKGROUND_CLIP_TEXT_RE, JSX_COLOR_TRANSPARENT_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
 var init_anti_slop_linter = __esm({
   "src/verify/anti-slop-linter.ts"() {
     "use strict";
     init_verify();
     CLASS_ATTR_RE = /\b(?:className|class)\s*=\s*"([^"]*)"/g;
+    JSX_BACKDROP_FILTER_RE = /\bbackdropFilter\s*:\s*['"][^'"]*\bblur\(\s*(?!0(?:px)?\s*\))[^)]+\)/g;
+    JSX_BACKGROUND_CLIP_TEXT_RE = /\b(?:backgroundClip|WebkitBackgroundClip)\s*:\s*['"]\s*text\s*['"]/g;
+    JSX_COLOR_TRANSPARENT_RE = /\bcolor\s*:\s*['"]\s*transparent\s*['"]/;
     ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
     ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
     ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
@@ -1454,6 +1502,18 @@ async function runConsoleScan(opts) {
         aggregate.push(...scanText(text, "static-script"));
       }
     }
+    const noInputs = opts.sessionLogPath === void 0 && opts.bridgeUrl === void 0 && (opts.cssOrHtml === void 0 || !/<script\b/i.test(opts.cssOrHtml));
+    if (noInputs && aggregate.length === 0) {
+      return {
+        name: "console-scan",
+        severity: "pass",
+        durationMs: Date.now() - startedAt,
+        skipped: {
+          reason: "error",
+          detail: "no session log, bridge, or <script> content to scan"
+        }
+      };
+    }
     const severity = aggregate.some((c) => SEVERE_RE.test(c.message)) ? "fail" : aggregate.length > 0 ? "warn" : "pass";
     return {
       name: "console-scan",
@@ -1617,8 +1677,7 @@ async function runTabOrder(opts) {
       dom.window.close();
     } catch {
     }
-    const hasTrapLeak = violations.some((v) => v.kind === "focus-trap-leak");
-    const severity = hasTrapLeak ? "fail" : violations.length > 0 ? "warn" : "pass";
+    const severity = violations.length > 0 ? "warn" : "pass";
     const durationMs = Date.now() - startedAt;
     if (durationMs > TAB_ORDER_BUDGET_MS) {
     }
@@ -1788,7 +1847,19 @@ async function inlineLaunch(pw, url) {
     ]
   });
   const context = await browser.newContext();
-  return { browser, context };
+  return {
+    newPage: () => context.newPage(),
+    async close() {
+      try {
+        await context.close();
+      } catch {
+      }
+      try {
+        await browser.close();
+      } catch {
+      }
+    }
+  };
 }
 async function runMultiViewport(opts) {
   const startedAt = Date.now();
@@ -1837,24 +1908,16 @@ async function runMultiViewport(opts) {
     };
   }
   const sandbox = await loadSandbox2();
-  let browser = null;
-  let context = null;
+  let handle = null;
   try {
-    if (sandbox !== null) {
-      const launched = await sandbox.safeBrowserLaunch(opts.livePreviewUrl, {
-        timeoutMs: MULTI_VIEWPORT_BUDGET_MS - 500
-      });
-      browser = launched.browser;
-      context = launched.context;
-    } else {
-      const launched = await inlineLaunch(pw, opts.livePreviewUrl);
-      browser = launched.browser;
-      context = launched.context;
-    }
+    handle = sandbox !== null ? await sandbox.safeBrowserLaunch({
+      livePreviewUrl: opts.livePreviewUrl,
+      budgetMs: MULTI_VIEWPORT_BUDGET_MS - 500
+    }) : await inlineLaunch(pw, opts.livePreviewUrl);
     const screenshots = [];
     for (const vp of DEFAULT_VIEWPORTS) {
       if (Date.now() - budgetBase > MULTI_VIEWPORT_BUDGET_MS - 400) break;
-      const page = await context.newPage();
+      const page = await handle.newPage();
       try {
         await page.setViewportSize({ width: vp.w, height: vp.h });
         await page.goto(opts.livePreviewUrl, {
@@ -1900,15 +1963,9 @@ async function runMultiViewport(opts) {
       }
     };
   } finally {
-    if (context !== null) {
+    if (handle !== null) {
       try {
-        await context.close();
-      } catch {
-      }
-    }
-    if (browser !== null) {
-      try {
-        await browser.close();
+        await handle.close();
       } catch {
       }
     }
@@ -2056,7 +2113,11 @@ async function run(ctx) {
   const checks = MODE_CHECK_SETS[mode];
   const budgetMs = MODE_TIMING_BUDGET_MS[mode];
   const promises = checks.map(
-    (name) => runWithTimeout(name, dispatchCheck(name, ctx), budgetForCheck(name, mode))
+    (name) => runWithTimeout(
+      name,
+      dispatchCheck(name, ctx),
+      Math.min(budgetForCheck(name, mode), budgetMs)
+    )
   );
   const settled = await Promise.allSettled(promises);
   const resolved = settled.map((s, i) => {
@@ -2352,17 +2413,21 @@ function modeFor(opts) {
   return "stop-hook";
 }
 function gitChangedFiles(cwd, cap = 50) {
-  try {
-    const raw = execFileSync("git", ["diff", "HEAD", "--name-only"], {
-      cwd,
-      encoding: "utf8",
-      timeout: 3e3
-    });
-    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
-    return lines.slice(0, cap);
-  } catch {
-    return [];
-  }
+  const run2 = (args) => {
+    try {
+      const raw = execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        timeout: 3e3
+      });
+      return raw.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+    } catch {
+      return [];
+    }
+  };
+  const tracked = run2(["diff", "HEAD", "--name-only"]);
+  const untracked = run2(["ls-files", "--others", "--exclude-standard"]);
+  return [.../* @__PURE__ */ new Set([...tracked, ...untracked])].slice(0, cap);
 }
 function filterUiFiles(files) {
   return files.filter((f) => UI_EXTENSIONS2.has(extname2(f).toLowerCase()));
@@ -2483,6 +2548,7 @@ async function runAudit(args) {
     return EXIT_GATE;
   }
   const reports = [];
+  let hadHardReadError = false;
   for (const filePath of files) {
     let content = "";
     try {
@@ -2490,11 +2556,13 @@ async function runAudit(args) {
     } catch (err) {
       const code = err.code;
       if (code === "EISDIR") {
+        hadHardReadError = true;
         writeError({
           code: "EISDIR",
           message: `audit: '${filePath}' is a directory \u2014 audit takes file paths only. Pass explicit files (e.g. 'audit src/*.tsx') or run without args to fall back to changed-files mode.`
         });
       } else if (code !== "ENOENT" && code !== "ENOTDIR") {
+        hadHardReadError = true;
         writeError({
           code: "READ_FAILED",
           message: `audit: failed to read ${filePath}: ${err.message}`
@@ -2529,7 +2597,7 @@ async function runAudit(args) {
     const anyWarn = reports.some((r) => r.verdict === "warn" || r.verdict === "fail");
     if (anyWarn) return 1;
   }
-  void EXIT_IO;
+  if (hadHardReadError) return EXIT_IO;
   return EXIT_OK;
 }
 export {

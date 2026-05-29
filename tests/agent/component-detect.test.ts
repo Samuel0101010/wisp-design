@@ -81,13 +81,14 @@ describe("detect — primary lib identification", () => {
     );
   });
 
-  it("@radix-ui dep + import → primary=radix (Phase 6.5 calibration: threshold 0.6→0.45)", async () => {
-    // Phase 6 known-bug: the (0.5 + 0.4·N)/(N+1) asymptote at 0.4 left
-    // radix/mui/chakra/ant projects falling back to vanilla under the old
-    // 0.6 threshold. Phase 6.5 lowered the cutoff to 0.45 (see
-    // `src/contracts/component.ts > COMPONENT_DETECT_CONFIDENCE_THRESHOLD`)
-    // — these libs now cross the line at typical signal density (1 pkg.json
-    // dep + 1 source import → confidence ≈ 0.45).
+  it("@radix-ui dep + import → primary=radix, confidence = pkg(0.5) + sourceAvg(0.4) = 0.9", async () => {
+    // ADDITIVE scoring (the deliberate design, see
+    // src/agent/component-detect.ts §"Resolve per-lib confidence"): package.json
+    // is a standalone additive term on top of the per-signalling-file source
+    // average, then clamp01. With 1 pkg dep (0.5) + one import-only file
+    // (avg 0.4) the result is 0.9 — NOT the ~0.45 the old averaging formula
+    // would have produced. Pinned exactly so a regression to averaging fails
+    // here instead of silently changing the verdict's confidence.
     seedProject(
       root,
       {
@@ -103,6 +104,7 @@ describe("detect — primary lib identification", () => {
     );
     const res = await detect({ projectRoot: root, quick: true });
     expect(res.primaryLib).toBe("radix");
+    expect(res.confidence).toBeCloseTo(0.9, 5);
     const libs = new Set(res.signals.map((s) => s.detail));
     expect(
       [...libs].some((d) => d.includes("@radix-ui")),
@@ -165,21 +167,16 @@ describe("detect — primary lib identification", () => {
     expect(res.primaryLib).toBe("ant");
   });
 
-  it("tailwindcss + class matches in a single file → primary=tailwind", async () => {
-    // Tailwind crosses the threshold because the className rule + pkg.json
-    // co-occur in a single sample file: per-file score 0.2, plus the pkg.json
-    // pseudo-file at 0.5 — avg = (0.5 + 0.2) / 2 = 0.35. Wait — that's still
-    // below threshold. Tailwind requires MULTIPLE className-hit files OR a
-    // tailwind.config.js inside a scanned dir.
-    //
-    // We seed the tailwind.config.* file INSIDE src/ so the filename-pattern
-    // rule (weight 0.3) compounds with className + pkg.json. With one source
-    // file's per-file score = 0.3 (filename) + 0.2 (className) = 0.5, plus
-    // pkg.json (0.5) → avg over 2 = 0.5 — still below threshold.
-    //
-    // PINNED: Tailwind only reliably crosses threshold when the per-file
-    // score saturates at 1.0. We use a className-heavy file where the regex
-    // patterns stack via repeated matches; per-file cap holds at 1.0.
+  it("tailwindcss + config-filename + className → primary=tailwind, confidence = pkg(0.5) + sourceAvg((0.3+0.2)/2=0.25) = 0.75", async () => {
+    // ADDITIVE scoring (see component-detect.ts §"Resolve per-lib confidence").
+    // Two signalling source files:
+    //   • src/tailwind.config.js → filename-pattern (0.3)
+    //   • src/Page.tsx           → className-pattern (0.2)
+    // sourceAvg = (0.3 + 0.2) / 2 = 0.25. Plus the standalone pkg.json term
+    // (tailwindcss → 0.5) → confidence = 0.75, comfortably above the 0.45
+    // threshold. The OLD averaging formula would have dragged this below
+    // threshold to vanilla — pinning 0.75 ensures a regression to averaging
+    // fails here.
     seedProject(
       root,
       {
@@ -194,18 +191,12 @@ describe("detect — primary lib identification", () => {
       },
     );
     const res = await detect({ projectRoot: root, quick: true });
-    // The averager pulls towards vanilla again — pin the signals + actual
-    // verdict so the regression is clear.
-    if (res.confidence >= COMPONENT_DETECT_CONFIDENCE_THRESHOLD) {
-      expect(res.primaryLib).toBe("tailwind");
-      expect(res.preferredStrategy).toBe("class-edit");
-    } else {
-      // Documented fallback: even with all 3 Tailwind signals, the
-      // cap-then-average aggregator yields a sub-threshold score. The
-      // detector returns vanilla — class-edit fallback is exposed via
-      // signals[] for the agent to escalate from.
-      expect(res.primaryLib).toBe("vanilla");
-    }
+    expect(res.primaryLib).toBe("tailwind");
+    expect(res.confidence).toBeCloseTo(0.75, 5);
+    expect(res.confidence).toBeGreaterThanOrEqual(
+      COMPONENT_DETECT_CONFIDENCE_THRESHOLD,
+    );
+    expect(res.preferredStrategy).toBe("class-edit");
   });
 
   it("no deps + no patterns → primary=vanilla (fallback)", async () => {
@@ -226,11 +217,12 @@ describe("detect — primary lib identification", () => {
       "src/Page.tsx": `<div className="flex">x</div>`,
     });
     const res = await detect({ projectRoot: root, quick: true });
-    // Tailwind className alone is weight 0.2; below threshold 0.6 unless
-    // averaged differently. Expect vanilla fallback.
-    if (res.confidence < COMPONENT_DETECT_CONFIDENCE_THRESHOLD) {
-      expect(res.primaryLib).toBe("vanilla");
-    }
+    // Under additive scoring: no pkg term (0) + sourceAvg = className-only 0.2
+    // → confidence 0.2, below the 0.45 threshold → vanilla. Pinned exactly so
+    // a className-weight or threshold drift surfaces here.
+    expect(res.confidence).toBeCloseTo(0.2, 5);
+    expect(res.confidence).toBeLessThan(COMPONENT_DETECT_CONFIDENCE_THRESHOLD);
+    expect(res.primaryLib).toBe("vanilla");
   });
 });
 

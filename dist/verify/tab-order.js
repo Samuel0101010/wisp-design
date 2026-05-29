@@ -191,8 +191,7 @@ async function runTabOrder(opts) {
       dom.window.close();
     } catch {
     }
-    const hasTrapLeak = violations.some((v) => v.kind === "focus-trap-leak");
-    const severity = hasTrapLeak ? "fail" : violations.length > 0 ? "warn" : "pass";
+    const severity = violations.length > 0 ? "warn" : "pass";
     const durationMs = Date.now() - startedAt;
     if (durationMs > TAB_ORDER_BUDGET_MS) {
     }

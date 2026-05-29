@@ -19,6 +19,11 @@ import type {
   LongPollResponse,
 } from "../../src/contracts/bridge.js";
 
+// Test-only handle augmentation: server.ts attaches a non-enumerable
+// `pendingWaiters()` accessor so disconnect-cleanup tests can assert the
+// parked-waiter set drains. Not part of the BridgeServerHandle contract.
+type HandleWithWaiters = BridgeServerHandle & { pendingWaiters(): number };
+
 let handle: BridgeServerHandle;
 let projectRoot: string;
 const baseUrl = (): string => `http://127.0.0.1:${handle.port}`;
@@ -33,6 +38,16 @@ const samplePickEvent = (): BridgeEvent => ({
     rect: { x: 0, y: 0, w: 10, h: 10 },
   },
 });
+
+// Drain the queue and return the head cursor, so a follow-up poll using this
+// cursor genuinely PARKS (no pending events to fast-path on). The fixtures in
+// this file accumulate events across tests, so polling with cursor=0 would
+// otherwise fast-path on the backlog.
+async function drainCursor(): Promise<string> {
+  const res = await fetch(`${baseUrl()}/poll?token=${handle.token}&timeout=50`);
+  const body = (await res.json()) as LongPollResponse;
+  return body.cursor;
+}
 
 async function postEvent(event: BridgeEvent): Promise<string> {
   const res = await fetch(`${baseUrl()}/events?token=${handle.token}`, {
@@ -174,6 +189,99 @@ describe("long-poll", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as LongPollResponse;
       expect(Array.isArray(body.events)).toBe(true);
+    },
+  );
+
+  it(
+    "GET /poll with non-numeric timeout waits (NaN does not short-circuit)",
+    { timeout: 8000 },
+    async () => {
+      const h = handle as HandleWithWaiters;
+      // Drain so the poll parks instead of fast-pathing on the backlog.
+      const cursor = await drainCursor();
+
+      // ?timeout=abc → parseInt → NaN. Before the fix this flowed straight into
+      // longPoll (`??` does NOT substitute NaN), `setTimeout(fn, NaN)` coerced
+      // to 0, and the poll returned immediately — degrading to a busy-loop.
+      const ac = new AbortController();
+      const pending = fetch(
+        `${baseUrl()}/poll?token=${handle.token}&timeout=abc&cursor=${encodeURIComponent(cursor)}`,
+        { signal: ac.signal },
+      ).catch(() => undefined);
+
+      // Wait past any immediate-return window, then assert the waiter is parked
+      // (proving NaN was coerced to the default lease, not 0).
+      for (let tries = 0; tries < 20 && h.pendingWaiters() < 1; tries += 1) {
+        // eslint-disable-next-line no-await-in-loop -- bounded retry
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      expect(h.pendingWaiters()).toBe(1);
+
+      ac.abort();
+      await pending;
+    },
+  );
+
+  it(
+    "GET /poll with empty timeout query waits (empty string → NaN guard)",
+    { timeout: 8000 },
+    async () => {
+      const h = handle as HandleWithWaiters;
+      const cursor = await drainCursor();
+      const ac = new AbortController();
+      const pending = fetch(
+        `${baseUrl()}/poll?token=${handle.token}&timeout=&cursor=${encodeURIComponent(cursor)}`,
+        { signal: ac.signal },
+      ).catch(() => undefined);
+      for (let tries = 0; tries < 20 && h.pendingWaiters() < 1; tries += 1) {
+        // eslint-disable-next-line no-await-in-loop -- bounded retry
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      expect(h.pendingWaiters()).toBe(1);
+      ac.abort();
+      await pending;
+    },
+  );
+
+  it(
+    "aborted polls release their parked waiters (no waiter/timer leak)",
+    { timeout: 8000 },
+    async () => {
+      const h = handle as HandleWithWaiters;
+      // Drain any pending events so the polls below park instead of fast-pathing.
+      const cursor = await drainCursor();
+
+      // Open N long polls (10s timeout) so each parks a waiter, then abort all.
+      const N = 8;
+      const controllers: AbortController[] = [];
+      const inflight: Array<Promise<unknown>> = [];
+      for (let i = 0; i < N; i += 1) {
+        const ac = new AbortController();
+        controllers.push(ac);
+        inflight.push(
+          fetch(`${baseUrl()}/poll?token=${handle.token}&timeout=10000&cursor=${encodeURIComponent(cursor)}`, {
+            signal: ac.signal,
+          }).catch(() => undefined),
+        );
+      }
+      // Let the server register the waiters. Native fetch (undici) pools
+      // connections per origin, so the polls may park gradually rather than
+      // all at once — wait until every one has parked (bounded retry).
+      for (let tries = 0; tries < 40 && h.pendingWaiters() < N; tries += 1) {
+        // eslint-disable-next-line no-await-in-loop -- bounded retry
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      expect(h.pendingWaiters()).toBe(N);
+
+      for (const ac of controllers) ac.abort();
+      await Promise.all(inflight);
+
+      // Close handler runs async on the server side; poll the count down.
+      for (let tries = 0; tries < 40 && h.pendingWaiters() > 0; tries += 1) {
+        // eslint-disable-next-line no-await-in-loop -- bounded retry
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      expect(h.pendingWaiters()).toBe(0);
     },
   );
 

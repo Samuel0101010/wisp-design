@@ -332,7 +332,26 @@ describe("postEvent — happy + error paths", () => {
 });
 
 describe("routeEvent — discriminated-union classifier", () => {
-  it("configure → generate-variants", () => {
+  // Bug #22 propagation: the browser emits the variant-generation trigger as
+  // `generating` (never `configure`) — see src/browser/index.ts:496 +
+  // src/browser/state-machine.ts:218. routeEvent MUST classify `generating`
+  // as the active generate-variants trigger, NOT ignore it as a status echo.
+  // If the browser vocabulary changes, this assertion + SKILL.md row 39 +
+  // docs/agent-loop.md must be revisited together.
+  it("generating → generate-variants (the real browser trigger)", () => {
+    const r = routeEvent({
+      kind: "generating",
+      sessionId: sampleSessionId,
+      target: sampleTarget,
+      freeText: "make it bolder",
+      variantCount: 3,
+    });
+    expect(r.action).toBe("generate-variants");
+  });
+
+  it("configure → generate-variants (legacy/back-compat alias)", () => {
+    // `configure` is no longer emitted by the browser but kept as a back-compat
+    // alias for scripted POSTs against the older event vocabulary.
     const r = routeEvent({
       kind: "configure",
       sessionId: sampleSessionId,
@@ -404,6 +423,39 @@ describe("runPollOnce / runPostEvent CLI runners", () => {
     const parsed = JSON.parse(joined);
     expect(Array.isArray(parsed.events)).toBe(true);
     expect(typeof parsed.cursor).toBe("string");
+  });
+
+  it("runPollOnce: --timeout over max → exit 2 BAD_FLAG (client-side, not HTTP)", async () => {
+    // The schema caps timeoutMs at POLL_LOOP_DEFAULT_TIMEOUT_MS (270_000). A
+    // bad --timeout is a client-side argparse error → exit 2 (bad flag), NOT
+    // exit 3 (transient upstream HTTP error a wrapper might retry forever).
+    const cap = captureStdio();
+    let code = 99;
+    try {
+      code = await withCwd(projectRoot, () =>
+        runPollOnce(["--timeout", "300000"]),
+      );
+    } finally {
+      cap.restore();
+    }
+    expect(code).toBe(2);
+    expect(cap.stderr.join("")).toMatch(/BAD_FLAG|timeout/i);
+  });
+
+  it("runPollOnce: --lease below min → exit 2 BAD_FLAG", async () => {
+    // The schema requires leaseMs >= 1000. A sub-min --lease is a client-side
+    // bad flag → exit 2, not a zod refusal masquerading as exit 3.
+    const cap = captureStdio();
+    let code = 99;
+    try {
+      code = await withCwd(projectRoot, () =>
+        runPollOnce(["--timeout", "1000", "--lease", "500"]),
+      );
+    } finally {
+      cap.restore();
+    }
+    expect(code).toBe(2);
+    expect(cap.stderr.join("")).toMatch(/BAD_FLAG|lease/i);
   });
 
   it("runPollOnce: no port-lock → exit 1 BRIDGE_NOT_RUNNING", async () => {

@@ -56,7 +56,24 @@ function sanitiseVariantCss(css: string): string {
     out = out.replace(re, "/* removed */");
   }
   // Strip carriage-returns to simplify the @scope wrapping below.
-  return out.replace(/\r\n/g, "\n");
+  out = out.replace(/\r\n/g, "\n");
+  // Prevent @scope breakout: the body's braces must stay balanced and never
+  // go negative. An unbalanced `}` would close the surrounding `@scope (…) {`
+  // rule early and inject arbitrary GLOBAL CSS into <head> (the exact failure
+  // the module comment above claims to prevent). Reject hostile bodies rather
+  // than risk leaking a global rule.
+  let depth = 0;
+  for (const ch of out) {
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth < 0) break;
+    }
+  }
+  if (depth !== 0) {
+    return "/* wisp-design: rejected unbalanced variant CSS */";
+  }
+  return out;
 }
 
 function escapeRe(s: string): string {

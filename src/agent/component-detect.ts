@@ -433,6 +433,16 @@ export async function detect(
   //    signalling-files keeps the algorithm robust to repo size — a single
   //    matching file in a 500-file repo still shows up). The clamp prevents
   //    runaway saturation when both sides are strong.
+  //
+  //    NOTE on contract drift: src/contracts/component.ts §"Weights are
+  //    aggregated PER FILE … then averaged" and the 0.45-threshold calibration
+  //    comment describe the OLD `(0.5 + N·0.4)/(1+N)` averaging — they are the
+  //    stale surface, not this code. Under additive scoring a single installed
+  //    dep (0.5) alone clears 0.45; that is intentional (an installed
+  //    component-lib dep is a deliberate, strong signal). Confidence values are
+  //    pinned exactly in tests/agent/component-detect.test.ts (radix 0.9,
+  //    tailwind 0.75, weak-className 0.2) so a regression to averaging fails
+  //    loudly there.
   const finalConfidence = new Map<ComponentLib, number>();
   for (const lib of ALL_LIBS) {
     const sourceSum = sumPerLib.get(lib) ?? 0;

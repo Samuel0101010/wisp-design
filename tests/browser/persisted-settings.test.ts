@@ -22,7 +22,7 @@ const KEY = _internals.STORAGE_KEY_VARIANT_COUNT;
 // Tiny in-memory localStorage stub for the happy paths.
 function installMemoryStorage(): { read: () => Record<string, string>; clear: () => void } {
   const store: Record<string, string> = {};
-  // @ts-expect-error — jsdom may already define this; we re-assign for clarity.
+  // jsdom may already define this; we re-assign for clarity.
   globalThis.localStorage = {
     getItem: (k: string) => (k in store ? store[k]! : null),
     setItem: (k: string, v: string) => {
@@ -73,7 +73,7 @@ describe("persisted-settings — readVariantCount", () => {
   });
 
   it("clamps malformed string to fallback", () => {
-    // @ts-expect-error — directly poke storage
+    // directly poke storage
     globalThis.localStorage.setItem(KEY, "not-a-number");
     expect(readVariantCount(5)).toBe(5);
   });
@@ -104,7 +104,6 @@ describe("persisted-settings — graceful failure", () => {
   });
 
   it("returns fallback when getItem throws", () => {
-    // @ts-expect-error
     globalThis.localStorage = {
       getItem: () => {
         throw new Error("strict-mode");
@@ -121,7 +120,6 @@ describe("persisted-settings — graceful failure", () => {
   });
 
   it("write does not throw when setItem rejects (quota)", () => {
-    // @ts-expect-error
     globalThis.localStorage = {
       getItem: () => null,
       setItem: () => {
@@ -191,7 +189,7 @@ describe("persisted-settings — deviation (Phase 7.15)", () => {
   });
 
   it("malformed string in storage falls back to default", () => {
-    // @ts-expect-error — directly poke storage
+    // directly poke storage
     globalThis.localStorage.setItem(_internals.STORAGE_KEY_DEVIATION, "not-a-number");
     expect(readDeviation()).toBe(3);
     expect(readDeviation(2)).toBe(2);
@@ -216,7 +214,6 @@ describe("persisted-settings — deviation graceful failure", () => {
   });
 
   it("write does not throw on quota exceeded", () => {
-    // @ts-expect-error
     globalThis.localStorage = {
       getItem: () => null,
       setItem: () => {

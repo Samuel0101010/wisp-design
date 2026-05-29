@@ -118,6 +118,20 @@ export function safeJson(
   }
 }
 
+// Merge a parsed request body with the server-authenticated token so the
+// LongPollRequest schema (which requires a UUID-shaped `token`) validates.
+// The server token is spread LAST so it is authoritative regardless of body
+// contents — a client cannot override the authenticated identity by sending
+// its own `token` field. Today `parsed.data.token` is unused downstream, but
+// keeping the server value authoritative removes a latent auth-confusion
+// footgun if future code ever trusts it.
+export function withAuthoritativeToken(
+  valueObj: Record<string, unknown>,
+  token: string,
+): Record<string, unknown> {
+  return { ...valueObj, token };
+}
+
 export function parseCursor(cursor: string | undefined): number {
   if (cursor === undefined || cursor.length === 0) return 0;
   const m = /^seq-(\d+)-/.exec(cursor);

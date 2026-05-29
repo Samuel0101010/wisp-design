@@ -189,6 +189,53 @@ function runTailwindClassMatchers(content, ctx) {
   }
   return { violations, defaultBlueClassHits };
 }
+var JSX_BACKDROP_FILTER_RE = /\bbackdropFilter\s*:\s*['"][^'"]*\bblur\(\s*(?!0(?:px)?\s*\))[^)]+\)/g;
+var JSX_BACKGROUND_CLIP_TEXT_RE = /\b(?:backgroundClip|WebkitBackgroundClip)\s*:\s*['"]\s*text\s*['"]/g;
+var JSX_COLOR_TRANSPARENT_RE = /\bcolor\s*:\s*['"]\s*transparent\s*['"]/;
+function runJsxInlineStyleMatchers(content) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  function push(v) {
+    const key = `${v.ruleId}:${v.location?.line ?? 0}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  }
+  JSX_BACKDROP_FILTER_RE.lastIndex = 0;
+  let m;
+  while ((m = JSX_BACKDROP_FILTER_RE.exec(content)) !== null) {
+    const before = content.slice(Math.max(0, m.index - 100), m.index);
+    const after = content.slice(m.index, Math.min(content.length, m.index + 100));
+    if (/wisp-justify/.test(before) || /wisp-justify/.test(after)) continue;
+    const { line, column } = lineColAt(content, m.index);
+    push({
+      ruleId: "default-glassmorphism",
+      severity: "fail",
+      message: "glassmorphism via JSX inline style (backdropFilter: blur) \u2014 default AI vibe.",
+      suggestedFix: "Add `/* wisp-justify: <reason> */` within 100 chars, or remove the backdropFilter.",
+      location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+    });
+    if (m.index === JSX_BACKDROP_FILTER_RE.lastIndex) JSX_BACKDROP_FILTER_RE.lastIndex += 1;
+  }
+  JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex = 0;
+  while ((m = JSX_BACKGROUND_CLIP_TEXT_RE.exec(content)) !== null) {
+    const start = Math.max(0, m.index - 200);
+    const end = Math.min(content.length, m.index + m[0].length + 200);
+    const window = content.slice(start, end);
+    if (JSX_COLOR_TRANSPARENT_RE.test(window)) {
+      const { line, column } = lineColAt(content, m.index);
+      push({
+        ruleId: "gradient-text-headline",
+        severity: "fail",
+        message: "gradient text via JSX inline style (backgroundClip: 'text' + color: 'transparent') \u2014 kills scanability.",
+        suggestedFix: "Use a solid colour. Gradient text only for purely decorative, non-interactive accents.",
+        location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+      });
+    }
+    if (m.index === JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex) JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex += 1;
+  }
+  return out;
+}
 var ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
 var ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
 var ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
@@ -525,6 +572,7 @@ async function runAntiSlop(css, ctx) {
     const tw = runTailwindClassMatchers(sourceForClassScan, aggCtx);
     for (const v of tw.violations) violations.push(v);
     parkedDefaultBlueClassHits = tw.defaultBlueClassHits;
+    for (const v of runJsxInlineStyleMatchers(sourceForClassScan)) violations.push(v);
   }
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;

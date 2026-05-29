@@ -155,6 +155,13 @@ export function findMarkerBlock(
   let openLine = -1;
   let openOffset = -1;
   let openPayload: Record<string, string> = {};
+  // Nesting depth of the group's open markers AFTER we've opened a matching
+  // block. Stacking the SAME session+target twice produces nested markers
+  // (outer-start, inner-start, inner-end, outer-end); without a depth counter
+  // the scanner would pair outer-start with inner-end and return a truncated,
+  // unbalanced range. We count every group -start/-end once opened so the
+  // outer -start pairs with the outer -end.
+  let depth = 0;
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] as string;
@@ -166,38 +173,47 @@ export function findMarkerBlock(
     if (parsed.kind === null) continue;
     if (groupOfKind(parsed.kind) !== group) continue;
 
-    if (openLine === -1) {
-      if (!parsed.kind.endsWith("-start")) continue;
-      if (
-        filter.sessionId !== undefined &&
-        parsed.payload.sessionId !== filter.sessionId
-      ) {
-        continue;
+    if (parsed.kind.endsWith("-start")) {
+      if (openLine === -1) {
+        // Not yet inside a matching block — apply the session/target filter
+        // before opening. A non-matching -start is ignored entirely (it does
+        // not start the depth count).
+        if (
+          filter.sessionId !== undefined &&
+          parsed.payload.sessionId !== filter.sessionId
+        ) {
+          continue;
+        }
+        if (
+          filter.targetId !== undefined &&
+          parsed.payload.targetId !== filter.targetId
+        ) {
+          continue;
+        }
+        openLine = i;
+        openOffset = lineOffsets[i] as number;
+        openPayload = parsed.payload;
       }
-      if (
-        filter.targetId !== undefined &&
-        parsed.payload.targetId !== filter.targetId
-      ) {
-        continue;
-      }
-      openLine = i;
-      openOffset = lineOffsets[i] as number;
-      openPayload = parsed.payload;
+      depth += 1;
     } else {
-      if (!parsed.kind.endsWith("-end")) continue;
-      const endLine = i;
-      const nextStart =
-        i + 1 < lines.length
-          ? (lineOffsets[i + 1] as number)
-          : content.length;
-      return {
-        startLine: openLine,
-        endLine,
-        startOffset: openOffset,
-        endOffset: nextStart,
-        group,
-        payload: openPayload,
-      };
+      // -end marker.
+      if (openLine === -1) continue;
+      depth -= 1;
+      if (depth === 0) {
+        const endLine = i;
+        const nextStart =
+          i + 1 < lines.length
+            ? (lineOffsets[i + 1] as number)
+            : content.length;
+        return {
+          startLine: openLine,
+          endLine,
+          startOffset: openOffset,
+          endOffset: nextStart,
+          group,
+          payload: openPayload,
+        };
+      }
     }
   }
 

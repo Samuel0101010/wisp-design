@@ -93,6 +93,25 @@ function toBridgeAnnotation(a: Annotation): StructuredAnnotation {
   };
 }
 
+// Extract the declared `--wisp-*: value;` custom-property values for any var
+// that carries a `/* @param: … */` directive. SSE-delivered variants arrive
+// with their tuning encoded only in the CSS text; lifting the declared values
+// into `cssVars` makes the morph slider (which diffs cssVars across variants)
+// usable for real agent variants — not just the local placeholder set.
+const PARAM_DECL_RE =
+  /\/\*\s*@param:[^*]*\*\/\s*(--[A-Za-z][\w-]*)\s*:\s*([^;}]+)/g;
+function cssVarsFromCss(css: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  PARAM_DECL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PARAM_DECL_RE.exec(css)) !== null) {
+    const name = m[1];
+    const value = m[2]?.trim();
+    if (name && value) out[name] = value;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // init — the only documented entry.
 // ---------------------------------------------------------------------------
@@ -376,6 +395,9 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
     }
   };
 
+  // Full DOM rebuild — only on a genuinely new variant set (see cycling
+  // subscription). Tears down the prior render + sliders and builds the host
+  // wrapper + @scope styles fresh.
   const mountRender = (state: Extract<BrowserState, { kind: "cycling" }>): void => {
     tearDownRender();
     try {
@@ -392,24 +414,60 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
       }
       return;
     }
+    // Seed the just-built scope root with any param overrides carried over.
+    applyParamOverrides(state.paramOverrides);
+  };
 
-    // Mount the sliders for the active variant.
+  // Push the cycling state's param overrides onto the live @scope root. This
+  // is the zero-roundtrip path: the slider / morph onChange writes here
+  // directly, and a legitimate rebuild re-applies them so prior tuning
+  // survives. No DOM teardown, no bridge POST.
+  const applyParamOverrides = (overrides: Record<string, string>): void => {
+    if (activeRender === null) return;
+    for (const [name, value] of Object.entries(overrides ?? {})) {
+      activeRender.setParamOverride(name, value);
+    }
+  };
+
+  // (Re)mount the parameter sliders for the active variant into the bar's
+  // param-slot. Deferred so it runs AFTER the floating-bar's cycling render
+  // (which clears + re-appends the slot, with a 60ms fade on a cross-mode
+  // switch). Seeds initial values from cssVars + prior overrides so the
+  // slider thumb reflects the live state.
+  const mountSlidersForActive = (
+    state: Extract<BrowserState, { kind: "cycling" }>,
+  ): void => {
+    if (detachSliders !== null) {
+      detachSliders();
+      detachSliders = null;
+    }
     const variant = state.variants[state.activeIndex];
     const slot = paramSlotOf(bar);
-    if (variant && slot) {
-      const bindings = extractParameterBindings(variant.css);
-      const root = activeRender.getActiveScopeRoot();
-      detachSliders = mountParameterSliders({
-        container: slot,
-        bindings,
-        initialValues: variant.cssVars,
-        sanitize: sanitizeModule,
-        scopeRoot: root,
-        onChange: (varName, value) => {
-          machine.send("cycle-param-change", { varName, value });
-        },
-      });
-    }
+    if (!variant || !slot || activeRender === null) return;
+    const bindings = extractParameterBindings(variant.css);
+    const root = activeRender.getActiveScopeRoot();
+    detachSliders = mountParameterSliders({
+      container: slot,
+      bindings,
+      initialValues: { ...variant.cssVars, ...state.paramOverrides },
+      sanitize: sanitizeModule,
+      scopeRoot: root,
+      onChange: (varName, value) => {
+        // Zero-roundtrip: write straight to the live @scope root, then record
+        // the change in state for session-log / accept persistence.
+        activeRender?.setParamOverride(varName, value);
+        machine.send("cycle-param-change", { varName, value });
+      },
+    });
+  };
+
+  const BAR_FADE_MS = 70;
+  const scheduleSliderMount = (
+    state: Extract<BrowserState, { kind: "cycling" }>,
+  ): void => {
+    window.setTimeout(() => {
+      if (machine.current().state.kind === "cycling") mountSlidersForActive(state);
+    }, BAR_FADE_MS);
   };
 
   // -------------------------------------------------------------------------
@@ -424,6 +482,19 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
   const configuringFingerprint = (targets: ReadonlyArray<PickResult>): string =>
     `${targets.length}:${targets.map((t) => t.id).join(",")}`;
 
+  // Track the last rendered cycling variant-set so in-place changes
+  // (active-index, param tuning) DON'T tear down + rebuild the variant host
+  // (which snapped slider values back and removed the dragged slider) and
+  // DON'T re-POST a cycling bridge event on every tick. A full rebuild + POST
+  // only happens when this fingerprint changes, i.e. a genuinely new variant
+  // set arrives. Keys on targets + variant ids (NOT activeIndex/overrides).
+  let lastCyclingFingerprint = "";
+  const cyclingFingerprint = (
+    targets: ReadonlyArray<PickResult>,
+    variants: ReadonlyArray<Variant>,
+  ): string =>
+    `${targets.map((t) => t.id).join(",")}|${variants.map((v) => v.id).join(",")}`;
+
   const unsubscribe = machine.subscribe((snap) => {
     const st = snap.state;
     switch (st.kind) {
@@ -435,6 +506,7 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         multi.clear();
         clearPlaceholderTimer();
         lastConfiguringFingerprint = "";
+        lastCyclingFingerprint = "";
         bar.setMode("idle", { targets: [], freeText: "", requestedVariantCount: readVariantCount(DEFAULT_VARIANT_COUNT) });
         break;
       case "picking":
@@ -443,6 +515,7 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         unmountGeneratingOverlay();
         armPicker();
         lastConfiguringFingerprint = "";
+        lastCyclingFingerprint = "";
         bar.setMode("picking", { targets: [], freeText: "", requestedVariantCount: readVariantCount(DEFAULT_VARIANT_COUNT) });
         break;
       case "configuring": {
@@ -450,6 +523,7 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         armMultiSelect();
         tearDownRender();
         unmountGeneratingOverlay();
+        lastCyclingFingerprint = "";
         const cfg: ConfigureCtx = {
           targets: st.targets,
           freeText: st.freeText,
@@ -471,6 +545,7 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         disarmPicker();
         disarmMultiSelect();
         lastConfiguringFingerprint = "";
+        lastCyclingFingerprint = "";
         const gen: GeneratingCtx = {
           startedAt: st.startedAt,
           requestedVariantCount: st.requestedVariantCount,
@@ -513,29 +588,55 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         clearPlaceholderTimer();
         unmountGeneratingOverlay();
         lastConfiguringFingerprint = "";
-        mountRender(st);
+
+        const fp = cyclingFingerprint(st.targets, st.variants);
+        const isNewVariantSet = fp !== lastCyclingFingerprint;
+
+        if (isNewVariantSet) {
+          // Genuinely new variant set → full rebuild + bar re-render + POST.
+          lastCyclingFingerprint = fp;
+          mountRender(st);
+          const ctx: CycleCtx = {
+            variants: st.variants,
+            activeIndex: st.activeIndex,
+            bindings: [], // floating-bar doesn't use this — sliders are mounted directly
+          };
+          bar.setMode("cycling", ctx);
+          scheduleSliderMount(st);
+          // Push cycling event so the agent / session log sees the variant set.
+          const target = st.targets[0];
+          if (target) {
+            const ev: BridgeEvent = {
+              kind: "cycling",
+              target: toElementTarget(target),
+              variants: st.variants.map((v) => ({
+                id: v.id,
+                css: v.css,
+                rationale: v.rationale,
+              })),
+              activeIndex: st.activeIndex,
+              sessionId,
+            };
+            void bridge.postEvent(ev).catch(() => undefined);
+          }
+          break;
+        }
+
+        // In-place change (active-index and/or param tuning). Do NOT tear down
+        // the variant host (slider snap-back) and do NOT re-POST per tick
+        // (broken zero-roundtrip USP). Update the live DOM in place.
+        activeRender?.setActive(st.activeIndex);
+        applyParamOverrides(st.paramOverrides);
+        // Re-render the bar in-place (same-mode → synchronous, no fade) so the
+        // active-card highlight + morph partner reflect the new active index,
+        // then re-mount sliders for the (possibly changed) active variant.
         const ctx: CycleCtx = {
           variants: st.variants,
           activeIndex: st.activeIndex,
-          bindings: [], // floating-bar doesn't use this — sliders are mounted directly
+          bindings: [],
         };
         bar.setMode("cycling", ctx);
-        // Push cycling event so the agent / session log sees the active index.
-        const target = st.targets[0];
-        if (target) {
-          const ev: BridgeEvent = {
-            kind: "cycling",
-            target: toElementTarget(target),
-            variants: st.variants.map((v) => ({
-              id: v.id,
-              css: v.css,
-              rationale: v.rationale,
-            })),
-            activeIndex: st.activeIndex,
-            sessionId,
-          };
-          void bridge.postEvent(ev).catch(() => undefined);
-        }
+        scheduleSliderMount(st);
         break;
       }
       default:
@@ -558,6 +659,10 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
   // arrived. 5 min is long enough to cover cron latency + LLM design time.
   // The generating-overlay animation continues to indicate "designer working".
   const PLACEHOLDER_TIMEOUT_MS = 300_000;
+  // Derive the user-facing wait wording from the constant so the message can't
+  // drift away from the actual timeout again (was hard-coded "30s" after the
+  // Phase 7.10 bump to 300s).
+  const placeholderWaitLabel = `${Math.round(PLACEHOLDER_TIMEOUT_MS / 60000)} min`;
   const schedulePlaceholderVariants = (count: number): void => {
     clearPlaceholderTimer();
     placeholderTimer = window.setTimeout(() => {
@@ -568,7 +673,7 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
           cssVars: { "--wisp-pad": `${4 * (i + 1)}px` },
           rationale:
             i === 0
-              ? "Offline fallback after 30s — no /wisp-design live session is polling. Run `/wisp-design live` in Claude Code so I can design real variants."
+              ? `Offline fallback after ${placeholderWaitLabel} — no /wisp-design live session is polling. Run \`/wisp-design live\` in Claude Code so I can design real variants.`
               : `Offline fallback ${i + 1} — adjust the padding slider to preview.`,
         }),
       );
@@ -593,7 +698,9 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
       const variants: Variant[] = ev.variants.map((v) => ({
         id: v.id,
         css: v.css,
-        cssVars: {},
+        // Lift declared `/* @param */ --wisp-*` values so the morph slider is
+        // usable for real agent variants (it diffs cssVars across the set).
+        cssVars: cssVarsFromCss(v.css),
         rationale: v.rationale,
       }));
       // Phase 7.8 — echo-guard. The browser POSTs cycling to the bridge on

@@ -484,5 +484,67 @@ describe("listSessions + findMostRecentSessionId", () => {
   });
 });
 
+describe("sessionId path-traversal guard", () => {
+  let root: string;
+  beforeEach(() => {
+    root = makeRoot();
+  });
+  afterEach(() => cleanup(root));
+
+  // A secret .jsonl OUTSIDE the project's .wisp/sessions/ must never be read
+  // by feeding a traversal id. The bare `${id}.jsonl` join would otherwise
+  // escape the sessions dir.
+  it("buildTimeline rejects a sessionId with `..` segments", async () => {
+    await expect(
+      sessionReplay.buildTimeline("../../../secret", { projectRoot: root }),
+    ).rejects.toThrow(/invalid sessionId/i);
+  });
+
+  it("buildTimeline rejects a sessionId with a forward slash", async () => {
+    await expect(
+      sessionReplay.buildTimeline("a/b", { projectRoot: root }),
+    ).rejects.toThrow(/invalid sessionId/i);
+  });
+
+  it("buildTimeline rejects a sessionId with a backslash", async () => {
+    await expect(
+      sessionReplay.buildTimeline("a\\b", { projectRoot: root }),
+    ).rejects.toThrow(/invalid sessionId/i);
+  });
+
+  it("readSessionEntries does not read a file outside .wisp/sessions/", async () => {
+    // Plant a secret file two dirs above root, named so a traversal id would
+    // resolve to it: <root>/../secret.jsonl.
+    const secret = join(root, "..", "wisp-replay-secret.jsonl");
+    writeFileSync(
+      secret,
+      JSON.stringify({
+        ts: ISO0,
+        sessionId: "x",
+        kind: "session-start",
+        detail: { leaked: "TOPSECRET" },
+      }) + "\n",
+      "utf8",
+    );
+    try {
+      await expect(
+        readSessionEntries(root, "../wisp-replay-secret"),
+      ).rejects.toThrow(/invalid sessionId/i);
+    } finally {
+      try {
+        rmSync(secret, { force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+  });
+
+  it("empty sessionId is rejected", async () => {
+    await expect(
+      sessionReplay.buildTimeline("", { projectRoot: root }),
+    ).rejects.toThrow(/invalid sessionId/i);
+  });
+});
+
 // Touch the imported type so eslint/tsc don't flag unused imports.
 void ({} as SessionEventEntry);

@@ -83,11 +83,22 @@ async function chromiumInstalled(pw: PlaywrightLike): Promise<boolean> {
 // launch.
 // ---------------------------------------------------------------------------
 
+// A browser handle in the shape `_sandbox.ts` exports: it owns its own
+// context, so callers only need `newPage()` + `close()`. The inline fallback
+// adapts a raw playwright browser/context into the same shape.
+interface BrowserHandle {
+  newPage(): Promise<PlaywrightPage>;
+  close(): Promise<void>;
+}
+
+// Mirror of the real `safeBrowserLaunch` export from `./_sandbox.ts`. Kept
+// minimal (only the fields multi-viewport consumes) so the `as` cast at the
+// import site does not suppress a real signature drift on these members.
 interface SandboxModule {
-  safeBrowserLaunch: (
-    url: string,
-    opts?: { timeoutMs?: number },
-  ) => Promise<{ browser: PlaywrightBrowser; context: PlaywrightContext }>;
+  safeBrowserLaunch: (opts: {
+    livePreviewUrl: string;
+    budgetMs?: number;
+  }) => Promise<BrowserHandle>;
 }
 
 async function loadSandbox(): Promise<SandboxModule | null> {
@@ -100,13 +111,14 @@ async function loadSandbox(): Promise<SandboxModule | null> {
 
 // ---------------------------------------------------------------------------
 // Inline-launch fallback. Hardened: localhost only, sandbox on, headless,
-// no extensions, no first-run.
+// no extensions, no first-run. Returns the same `{ newPage, close }` handle
+// shape as `safeBrowserLaunch` so the capture loop is launcher-agnostic.
 // ---------------------------------------------------------------------------
 
 async function inlineLaunch(
   pw: PlaywrightLike,
   url: string,
-): Promise<{ browser: PlaywrightBrowser; context: PlaywrightContext }> {
+): Promise<BrowserHandle> {
   const u = new URL(url);
   if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
     throw new Error(`multi-viewport refuses non-localhost URL: ${url}`);
@@ -120,7 +132,21 @@ async function inlineLaunch(
     ],
   });
   const context = await browser.newContext();
-  return { browser, context };
+  return {
+    newPage: () => context.newPage(),
+    async close(): Promise<void> {
+      try {
+        await context.close();
+      } catch {
+        /* ignore */
+      }
+      try {
+        await browser.close();
+      } catch {
+        /* ignore */
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -186,21 +212,16 @@ export async function runMultiViewport(opts: {
   }
 
   const sandbox = await loadSandbox();
-  let browser: PlaywrightBrowser | null = null;
-  let context: PlaywrightContext | null = null;
+  let handle: BrowserHandle | null = null;
 
   try {
-    if (sandbox !== null) {
-      const launched = await sandbox.safeBrowserLaunch(opts.livePreviewUrl, {
-        timeoutMs: MULTI_VIEWPORT_BUDGET_MS - 500,
-      });
-      browser = launched.browser;
-      context = launched.context;
-    } else {
-      const launched = await inlineLaunch(pw, opts.livePreviewUrl);
-      browser = launched.browser;
-      context = launched.context;
-    }
+    handle =
+      sandbox !== null
+        ? await sandbox.safeBrowserLaunch({
+            livePreviewUrl: opts.livePreviewUrl,
+            budgetMs: MULTI_VIEWPORT_BUDGET_MS - 500,
+          })
+        : await inlineLaunch(pw, opts.livePreviewUrl);
 
     const screenshots: ViewportScreenshot[] = [];
 
@@ -210,7 +231,7 @@ export async function runMultiViewport(opts: {
     for (const vp of DEFAULT_VIEWPORTS) {
       if (Date.now() - budgetBase > MULTI_VIEWPORT_BUDGET_MS - 400) break;
 
-      const page = await context.newPage();
+      const page = await handle.newPage();
       try {
         await page.setViewportSize({ width: vp.w, height: vp.h });
         await page.goto(opts.livePreviewUrl, {
@@ -262,16 +283,9 @@ export async function runMultiViewport(opts: {
       },
     };
   } finally {
-    if (context !== null) {
+    if (handle !== null) {
       try {
-        await context.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    if (browser !== null) {
-      try {
-        await browser.close();
+        await handle.close();
       } catch {
         /* ignore */
       }

@@ -20,7 +20,7 @@ export const WISP_VARIANT_DATA_ATTRIBUTE = "data-wisp-variant";
 export const WISP_CSS_DATA_ATTRIBUTE = "data-wisp-css";
 export const WISP_SESSION_DATA_ATTRIBUTE = "data-wisp-session";
 
-export const LIVE_JS_VERSION_TAG = "0.3.0-prerelease";
+export const LIVE_JS_VERSION_TAG = "0.11.0-prerelease";
 
 export const FREE_TEXT_MAX_LEN = 4000;
 export const ANNOTATION_NOTE_MAX_LEN = 2000;

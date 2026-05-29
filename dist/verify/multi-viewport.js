@@ -346,7 +346,19 @@ async function inlineLaunch(pw, url) {
     ]
   });
   const context = await browser.newContext();
-  return { browser, context };
+  return {
+    newPage: () => context.newPage(),
+    async close() {
+      try {
+        await context.close();
+      } catch {
+      }
+      try {
+        await browser.close();
+      } catch {
+      }
+    }
+  };
 }
 async function runMultiViewport(opts) {
   const startedAt = Date.now();
@@ -395,24 +407,16 @@ async function runMultiViewport(opts) {
     };
   }
   const sandbox = await loadSandbox();
-  let browser = null;
-  let context = null;
+  let handle = null;
   try {
-    if (sandbox !== null) {
-      const launched = await sandbox.safeBrowserLaunch(opts.livePreviewUrl, {
-        timeoutMs: MULTI_VIEWPORT_BUDGET_MS - 500
-      });
-      browser = launched.browser;
-      context = launched.context;
-    } else {
-      const launched = await inlineLaunch(pw, opts.livePreviewUrl);
-      browser = launched.browser;
-      context = launched.context;
-    }
+    handle = sandbox !== null ? await sandbox.safeBrowserLaunch({
+      livePreviewUrl: opts.livePreviewUrl,
+      budgetMs: MULTI_VIEWPORT_BUDGET_MS - 500
+    }) : await inlineLaunch(pw, opts.livePreviewUrl);
     const screenshots = [];
     for (const vp of DEFAULT_VIEWPORTS) {
       if (Date.now() - budgetBase > MULTI_VIEWPORT_BUDGET_MS - 400) break;
-      const page = await context.newPage();
+      const page = await handle.newPage();
       try {
         await page.setViewportSize({ width: vp.w, height: vp.h });
         await page.goto(opts.livePreviewUrl, {
@@ -458,15 +462,9 @@ async function runMultiViewport(opts) {
       }
     };
   } finally {
-    if (context !== null) {
+    if (handle !== null) {
       try {
-        await context.close();
-      } catch {
-      }
-    }
-    if (browser !== null) {
-      try {
-        await browser.close();
+        await handle.close();
       } catch {
       }
     }

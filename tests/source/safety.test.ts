@@ -147,6 +147,30 @@ describe("safetyCheck — Rule 3: REFUSE_LIST_MATCH", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("REFUSE_LIST_MATCH");
   });
+
+  // REGRESSION — NTFS is case-insensitive, so `.NEXT`, `DIST`, `Node_Modules`,
+  // and `.GIT` all reference the same on-disk dirs the refuse-list protects.
+  // path.resolve preserves the caller's casing on Windows, so without the `/i`
+  // flag these mixed-case paths bypassed the guard and the engine would write
+  // into build output / generated dirs / .git internals.
+  const MIXED_CASE_REFUSED: ReadonlyArray<readonly [string, string]> = [
+    [".NEXT", join(".NEXT", "index.html")],
+    ["DIST", join("DIST", "out.tsx")],
+    ["Node_Modules", join("Node_Modules", "foo", "x.tsx")],
+  ];
+  for (const [label, rel] of MIXED_CASE_REFUSED) {
+    it(`mixed-case ${label} → REFUSE_LIST_MATCH (NTFS case-insensitive bypass)`, async () => {
+      const r = await safetyCheck(join(root, rel), root);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("REFUSE_LIST_MATCH");
+    });
+  }
+
+  it("mixed-case .GIT/config → REFUSE_LIST_MATCH", async () => {
+    const r = await safetyCheck(join(root, "src", ".GIT", "config"), root);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("REFUSE_LIST_MATCH");
+  });
 });
 
 describe("safetyCheck — Rule 4: UNSUPPORTED_FILE_TYPE", () => {

@@ -30,6 +30,7 @@ import {
   sendError,
   sendJson,
   urlPath,
+  withAuthoritativeToken,
   type Query,
 } from "./http-helpers.js";
 
@@ -138,30 +139,49 @@ export async function startBridgeServer(
     });
   };
 
+  const releaseWaiter = (w: PollWaiter): void => {
+    if (!pollWaiters.has(w)) return;
+    pollWaiters.delete(w);
+    clearTimeout(w.timer);
+  };
+
+  // Returns the response promise plus a `cancel` handle. The poll handlers call
+  // `cancel()` from their `req.on("close")` listener so a premature client
+  // disconnect releases the parked waiter and clears its timer immediately,
+  // instead of leaking both until the (up to 270s) timer fires. `cancel` and
+  // `deliverWaiter` both guard on `pollWaiters.has(w)`, so they are mutually
+  // idempotent — no double-resolve, no double-clear.
   const longPoll = (
     sinceSeq: number,
     timeoutMs: number,
-  ): Promise<LongPollResponse> => {
+  ): { promise: Promise<LongPollResponse>; cancel: () => void } => {
     const cap = Math.min(Math.max(timeoutMs, 0), LONG_POLL_CAP_MS);
     // Fast-path: events already pending → return immediately.
     const ready = eventsSince(sinceSeq);
     if (ready.length > 0) {
       const last = ready[ready.length - 1];
-      return Promise.resolve({
-        events: ready.map((q) => q.event),
-        cursor: last !== undefined ? last.cursor : `seq-${seqCounter}-${sessionId}`,
-        slicedAt: 0,
-      });
+      return {
+        promise: Promise.resolve({
+          events: ready.map((q) => q.event),
+          cursor: last !== undefined ? last.cursor : `seq-${seqCounter}-${sessionId}`,
+          slicedAt: 0,
+        }),
+        cancel: () => {},
+      };
     }
-    return new Promise<LongPollResponse>((res) => {
-      const waiter: PollWaiter = {
+    let waiter!: PollWaiter;
+    const promise = new Promise<LongPollResponse>((res) => {
+      waiter = {
         resolve: res,
         sinceSeq,
         startedAt: Date.now(),
-        timer: setTimeout(() => deliverWaiter(waiter), cap),
+        // .unref() so a stray waiter timer never keeps the process alive past
+        // shutdown if a poll outlives stopServer's drain.
+        timer: setTimeout(() => deliverWaiter(waiter), cap).unref(),
       };
       pollWaiters.add(waiter);
     });
+    return { promise, cancel: () => releaseWaiter(waiter) };
   };
 
   // ---- Endpoint handlers ----
@@ -411,13 +431,17 @@ export async function startBridgeServer(
   };
 
   const handleGetPoll = async (req: IncomingMessage, res: ServerResponse, q: Query): Promise<void> => {
-    const timeout = q.timeout ?? LONG_POLL_DEFAULT_LEASE_MS;
+    const timeout = Number.isFinite(q.timeout)
+      ? (q.timeout as number)
+      : LONG_POLL_DEFAULT_LEASE_MS;
     const sinceSeq = parseCursor(q.cursor);
     const aborted = { v: false };
+    const { promise, cancel } = longPoll(sinceSeq, timeout);
     req.on("close", () => {
       aborted.v = true;
+      cancel();
     });
-    const response = await longPoll(sinceSeq, timeout);
+    const response = await promise;
     if (aborted.v) return;
     sendJson(res, 200, response);
   };
@@ -439,8 +463,10 @@ export async function startBridgeServer(
       typeof parsedJson.value === "object" && parsedJson.value !== null
         ? (parsedJson.value as Record<string, unknown>)
         : {};
-    // Ensure a token is present for schema (auth was already validated upstream).
-    const withToken = { token, ...valueObj };
+    // Ensure a token is present for schema (auth was already validated
+    // upstream). Server token is authoritative — a body-supplied `token`
+    // cannot override it (see withAuthoritativeToken).
+    const withToken = withAuthoritativeToken(valueObj, token);
     const parsed = LongPollRequestSchema.safeParse(withToken);
     let timeoutMs: number;
     let sinceSeq: number;
@@ -458,10 +484,12 @@ export async function startBridgeServer(
       sinceSeq = parseCursor(parsed.data.cursor);
     }
     const aborted = { v: false };
+    const { promise, cancel } = longPoll(sinceSeq, timeoutMs);
     req.on("close", () => {
       aborted.v = true;
+      cancel();
     });
-    const response = await longPoll(sinceSeq, timeoutMs);
+    const response = await promise;
     if (aborted.v) return;
     sendJson(res, 200, response);
   };
@@ -626,5 +654,12 @@ export async function startBridgeServer(
     }),
     stop: (graceMs?: number) => stopServer(graceMs),
   };
+  // Test-only observability: number of parked long-poll waiters. Not part of
+  // the BridgeServerHandle contract — exposed so disconnect-cleanup tests can
+  // assert the waiter set drains rather than only that the server stays up.
+  Object.defineProperty(handle, "pendingWaiters", {
+    value: () => pollWaiters.size,
+    enumerable: false,
+  });
   return handle;
 }

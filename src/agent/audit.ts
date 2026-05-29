@@ -69,25 +69,34 @@ function modeFor(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// `git diff HEAD --name-only` — returns relative paths; cap at 50.
-// ENOENT (no git) or non-repo → empty list.
+// Changed-files set for the default (no-explicit-paths) audit mode. Unions:
+//   • `git diff HEAD --name-only`               — tracked modifications
+//   • `git ls-files --others --exclude-standard` — untracked, gitignore-aware
+// Untracked files MUST be included: a brand-new UI file is the most likely to
+// hold freshly generated slop, and `git diff HEAD` alone omits it (so the
+// pre-commit gate would silently pass an unaudited new component). Deduped,
+// then capped. ENOENT (no git) or non-repo → empty list (each call self-heals).
 // ---------------------------------------------------------------------------
 
 function gitChangedFiles(cwd: string, cap = 50): string[] {
-  try {
-    const raw = execFileSync("git", ["diff", "HEAD", "--name-only"], {
-      cwd,
-      encoding: "utf8",
-      timeout: 3_000,
-    });
-    const lines = raw
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l !== "");
-    return lines.slice(0, cap);
-  } catch {
-    return [];
-  }
+  const run = (args: string[]): string[] => {
+    try {
+      const raw = execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        timeout: 3_000,
+      });
+      return raw
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l !== "");
+    } catch {
+      return [];
+    }
+  };
+  const tracked = run(["diff", "HEAD", "--name-only"]);
+  const untracked = run(["ls-files", "--others", "--exclude-standard"]);
+  return [...new Set([...tracked, ...untracked])].slice(0, cap);
 }
 
 function filterUiFiles(files: string[]): string[] {
@@ -245,6 +254,11 @@ export async function runAudit(args: string[]): Promise<number> {
   }
 
   const reports: VerifyReport[] = [];
+  // Set when a path we were explicitly asked to audit could not be read for a
+  // HARD reason (a directory, or a genuine read failure) — distinct from
+  // ENOENT/ENOTDIR which are intentionally swallowed (stale glob entries). A
+  // hard read error must NOT silently pass the gate with exit 0.
+  let hadHardReadError = false;
   for (const filePath of files) {
     let content = "";
     try {
@@ -252,6 +266,7 @@ export async function runAudit(args: string[]): Promise<number> {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "EISDIR") {
+        hadHardReadError = true;
         writeError({
           code: "EISDIR",
           message:
@@ -259,6 +274,7 @@ export async function runAudit(args: string[]): Promise<number> {
             `Pass explicit files (e.g. 'audit src/*.tsx') or run without args to fall back to changed-files mode.`,
         });
       } else if (code !== "ENOENT" && code !== "ENOTDIR") {
+        hadHardReadError = true;
         writeError({
           code: "READ_FAILED",
           message: `audit: failed to read ${filePath}: ${(err as Error).message}`,
@@ -304,9 +320,12 @@ export async function runAudit(args: string[]): Promise<number> {
     const anyWarn = reports.some((r) => r.verdict === "warn" || r.verdict === "fail");
     if (anyWarn) return 1;
   }
+  // A directory / unreadable explicit path produced no usable report — the
+  // user asked us to audit something we could not audit, so fail loudly rather
+  // than silently passing a CI gate (ENOENT/ENOTDIR stale globs stay exit 0).
+  if (hadHardReadError) return EXIT_IO;
   // Strict mode without explicit block (e.g. all passed) — still exit 0.
   // Standard non-strict warns are informational; exit 0.
-  void EXIT_IO; // keep import referenced for future error paths
   return EXIT_OK;
 }
 

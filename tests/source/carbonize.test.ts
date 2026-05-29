@@ -151,6 +151,45 @@ describe("carbonize — var() handling", () => {
     expect(out).not.toContain("--dead");
     expect(out).toContain("color: red");
   });
+
+  // REGRESSION — self-referential CSS var. bakeVars recursed without a
+  // visited-set, so `--x: var(--x)` overflowed the stack (RangeError) and
+  // crashed the whole accept path. CSS is LLM-generated, so adversarial/buggy
+  // cyclic vars must degrade gracefully, not throw.
+  it("self-referential var (--x: var(--x)) does not overflow the stack", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope { --x: var(--x); }\n" +
+      "  .a { color: var(--x); }\n" +
+      "}";
+    let out = "";
+    expect(() => {
+      out = carbonize(input, {
+        paramOverrides: noOverrides(),
+        scopeSelector: SCOPE,
+      });
+    }).not.toThrow();
+    // Cycle resolves to the literal `var(--x)` rather than overflowing.
+    expect(out).toContain(`${SCOPE} .a`);
+    expect(out).toContain("var(--x)");
+  });
+
+  // REGRESSION — mutually-referential cycle (--a → --b → --a).
+  it("mutually-referential vars (--a/--b cycle) do not overflow the stack", () => {
+    const input =
+      '@scope ([data-wisp-variant="1"]) {\n' +
+      "  :scope { --a: var(--b); --b: var(--a); }\n" +
+      "  .a { color: var(--a); }\n" +
+      "}";
+    let out = "";
+    expect(() => {
+      out = carbonize(input, {
+        paramOverrides: noOverrides(),
+        scopeSelector: SCOPE,
+      });
+    }).not.toThrow();
+    expect(out).toContain(`${SCOPE} .a`);
+  });
 });
 
 describe("carbonize — at-rules preserved", () => {

@@ -230,8 +230,18 @@ async function run(ctx: VerifyContext): Promise<VerifyReport> {
   const checks = MODE_CHECK_SETS[mode];
   const budgetMs = MODE_TIMING_BUDGET_MS[mode];
 
+  // contracts/verify.ts invariant #3: the mode budget is a HARD ceiling — any
+  // check still running at started+budget is aborted with a timeout-skip. Cap
+  // each per-check timeout at the mode budget so no single per-check value
+  // (e.g. multi-viewport's 10500ms in live-with-screenshot) can exceed the
+  // 6000ms mode ceiling. Checks run in parallel, so this makes the worst-case
+  // wall-clock equal the mode budget.
   const promises = checks.map((name) =>
-    runWithTimeout(name, dispatchCheck(name, ctx), budgetForCheck(name, mode)),
+    runWithTimeout(
+      name,
+      dispatchCheck(name, ctx),
+      Math.min(budgetForCheck(name, mode), budgetMs),
+    ),
   );
 
   // `Promise.allSettled` lets us tolerate a runWithTimeout that rejects (it

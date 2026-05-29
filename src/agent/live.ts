@@ -21,7 +21,9 @@
 //      result.events → routeEvent(evt) → handlers below.
 //
 // Event routing (synchronous classifier mirrors agent/poll-loop.routeEvent):
-//   • configure   → generateVariants (deterministic stub for v1.0.0)
+//   • generating  → generateVariants (deterministic stub for v1.0.0)
+//                   (the browser's variant-generation trigger — Bug #22;
+//                    `configure` is a legacy alias the browser no longer emits)
 //                   → wrapVariantBlock if source-edit-capable
 //                   → postEvent kind=cycling
 //                   → sessionLogger.logVariantsEmitted
@@ -30,7 +32,7 @@
 //                     else: postEvent kind=error with rule citation
 //   • discard     → discardVariantBlock → sessionLogger.log
 //   • annotation  → sessionLogger.log
-//   • pick/cycling/parameter-change/generating/heartbeat/error → ignore
+//   • pick/cycling/parameter-change/heartbeat/error → ignore
 //
 // Exit codes (match _helpers.EXIT_*):
 //   0  clean shutdown via SIGINT/SIGTERM

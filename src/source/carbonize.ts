@@ -272,10 +272,20 @@ function collectScopeVars(rootRule: Rule): Record<string, string> {
 // var(--x[, fallback]) substitution
 // ---------------------------------------------------------------------------
 
-function bakeVars(value: string, vars: Record<string, string>): string {
+function bakeVars(
+  value: string,
+  vars: Record<string, string>,
+  seen: ReadonlySet<string> = new Set(),
+): string {
   // Scan for `var(` and recursively substitute. Handles nested var() inside
   // calc() naturally because we just splice the resolved string in-place and
   // let the outer wrapper (calc, etc.) re-parse on each pass.
+  //
+  // `seen` threads the chain of var names currently being resolved so a self-
+  // or mutually-referential cycle (`--x: var(--x)`, `--a: var(--b); --b:
+  // var(--a)`) bails to the literal `var(--name)` instead of overflowing the
+  // stack. CSS reaching carbonize is LLM-generated, so cyclic input is a real
+  // adversarial/buggy case, not a "we control it" guarantee.
   let out = "";
   let i = 0;
   while (i < value.length) {
@@ -300,12 +310,16 @@ function bakeVars(value: string, vars: Record<string, string>): string {
       const commaIdx = findTopLevelComma(inner);
       const rawName = (commaIdx === -1 ? inner : inner.slice(0, commaIdx)).trim();
       const fallback = commaIdx === -1 ? "" : inner.slice(commaIdx + 1).trim();
-      if (rawName in vars) {
-        out += bakeVars(vars[rawName] as string, vars);
+      if (rawName in vars && !seen.has(rawName)) {
+        out += bakeVars(
+          vars[rawName] as string,
+          vars,
+          new Set(seen).add(rawName),
+        );
       } else if (fallback !== "") {
-        out += bakeVars(fallback, vars);
+        out += bakeVars(fallback, vars, seen);
       } else {
-        out += value.slice(i, j + 1); // keep `var(--x)` literal
+        out += value.slice(i, j + 1); // keep `var(--x)` literal (incl. cycles)
       }
       i = j + 1;
       continue;

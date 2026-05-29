@@ -306,4 +306,29 @@ describe("runHistory — error paths", () => {
       cap.restore();
     }
   });
+
+  it("--task with `..` traversal id → BAD_TASK_ID, exit 2 (no escape, no throw)", async () => {
+    const cap = captureStdio();
+    try {
+      const code = await runHistory(["--task", "../../../secret"]);
+      expect(code).toBe(2);
+      const errText = cap.stderr.join("");
+      expect(errText).toMatch(/BAD_TASK_ID/);
+      // Must NOT surface as an internal/build crash.
+      expect(errText).not.toMatch(/HISTORY_BUILD_FAILED/);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it("--task with a path separator → BAD_TASK_ID, exit 2", async () => {
+    const cap = captureStdio();
+    try {
+      const code = await runHistory(["--task", "a/b"]);
+      expect(code).toBe(2);
+      expect(cap.stderr.join("")).toMatch(/BAD_TASK_ID/);
+    } finally {
+      cap.restore();
+    }
+  });
 });

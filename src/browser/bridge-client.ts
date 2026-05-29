@@ -2,8 +2,9 @@
 //
 // Wraps fetch(POST /events) + EventSource(GET /events) with a long-poll
 // fallback for environments without EventSource (e.g. CSP that excluded
-// event-stream from connect-src — bridge/csp.ts is meant to fix that but
-// we keep the fallback for safety). The state machine never sees fetch
+// event-stream from connect-src). bridge/csp.ts ships an opt-in dev-mode CSP
+// patch helper but is not auto-wired, so we keep the fallback for safety.
+// The state machine never sees fetch
 // directly — `BridgeClient` is the only surface.
 
 import type {
@@ -41,7 +42,7 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
         const loop = async (): Promise<void> => {
           while (!cancelled && !closed) {
             try {
-              const res = await fetch(url("/poll&timeout=30000"));
+              const res = await fetch(url("/poll?timeout=30000"));
               if (!res.ok) {
                 await sleep(1000);
                 continue;

@@ -2,9 +2,11 @@
 //
 // wisp-design — Bundle-size budget (Phase 2 USP).
 //
-// `dist/live.js` must stay under 50 kB to keep the runtime IIFE
-// page-injection-cheap. Asserts that the build artefact exists and is well
-// under budget. Skips with a clear message when `npm run build` hasn't run.
+// `dist/live.js` must stay under 95 kB to keep the runtime IIFE
+// page-injection-cheap (budget bumped from the original 50 kB after the
+// a11y-radar-badge + variant-morph-slider additions; current bundle ≈ 81 kB).
+// Asserts that the build artefact exists and is under budget. Skips with a
+// clear message when `npm run build` hasn't run.
 
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync, statSync } from "node:fs";

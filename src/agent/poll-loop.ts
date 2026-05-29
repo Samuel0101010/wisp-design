@@ -182,7 +182,8 @@ function parseLongPollResponse(raw: unknown): LongPollResponse {
 // ---------------------------------------------------------------------------
 // postEvent — one-shot POST /events. Used by the agent to push cycling /
 // generating / error events back to the browser after reasoning about a
-// `configure` event.
+// `generating` event (the browser's variant-generation trigger; `configure`
+// is a legacy alias — see routeEvent + Bug #22).
 // ---------------------------------------------------------------------------
 
 export async function postEvent(
@@ -277,6 +278,14 @@ export function routeEvent(evt: BridgeEvent): {
 } {
   let action: AgentActionKind;
   switch (evt.kind) {
+    // `generating` is the live browser trigger for variant generation (the
+    // browser POSTs it on configure-submit — see src/browser/index.ts:496 +
+    // src/browser/state-machine.ts:218). `configure` is a legacy alias kept
+    // for back-compat with scripted POSTs against the older vocabulary; the
+    // browser no longer emits it. If the browser vocabulary changes, revisit
+    // this switch + skills/wisp-design/SKILL.md row 39 + docs/agent-loop.md
+    // together (Bug #22).
+    case "generating":
     case "configure":
       action = "generate-variants";
       break;
@@ -292,7 +301,6 @@ export function routeEvent(evt: BridgeEvent): {
     case "pick":
     case "cycling":
     case "parameter-change":
-    case "generating":
     case "heartbeat":
     case "error":
       action = "ignore";
@@ -349,6 +357,24 @@ export async function runPollOnce(args: string[]): Promise<number> {
     writeError({
       code: "BAD_FLAG",
       message: `--timeout must be >= ${POLL_LOOP_MIN_TIMEOUT_MS}ms; got ${timeoutMs}`,
+    });
+    return EXIT_ARG;
+  }
+  // Mirror PollOnceOptionsSchema's upper bound + lease floor here so an
+  // out-of-range flag exits 2 (argparse/bad-flag) rather than slipping through
+  // to pollOnce's ZodError → EXIT_HTTP (3). A wrapper that retries on exit 3
+  // (transient HTTP) must NOT loop forever on a permanently-malformed flag.
+  if (timeoutMs > POLL_LOOP_DEFAULT_TIMEOUT_MS) {
+    writeError({
+      code: "BAD_FLAG",
+      message: `--timeout must be <= ${POLL_LOOP_DEFAULT_TIMEOUT_MS}ms; got ${timeoutMs}`,
+    });
+    return EXIT_ARG;
+  }
+  if (leaseMs < 1_000) {
+    writeError({
+      code: "BAD_FLAG",
+      message: `--lease must be >= 1000ms; got ${leaseMs}`,
     });
     return EXIT_ARG;
   }

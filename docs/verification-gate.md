@@ -222,8 +222,8 @@ on "stop":
   if result.severity === "fail":
     if process.env.WISP_DESIGN_STRICT === "1":
       stdout.write(JSON.stringify({
-        permissionDecision: "block",
-        message: "wisp-design anti-slop: <rule citation + fix>"
+        decision: "block",                        // Stop-hook contract — NOT permissionDecision (that is PreToolUse and Stop ignores it)
+        reason: "wisp-design anti-slop: <rule citation + fix>"
       }))
     else:
       stderr.write("wisp-design anti-slop: <warning>\n")

@@ -1,8 +1,10 @@
 // wisp-design — tab-order check (Phase 5).
 //
-// Three sub-checks, each producing TabOrderViolation entries. Severity = worst
-// of:
-//   • focus-trap-leak     — fail (modal opens but focus escapes on Tab).
+// Three sub-checks, each producing TabOrderViolation entries. All three are
+// warn-only (non-blocking) because they are STATIC-markup heuristics:
+//   • focus-trap-leak     — warn (modal whose background siblings lack static
+//                            inert/aria-hidden; JS-trapped modals do this at
+//                            runtime, so a fail here would false-positive).
 //   • missing-focus-ring  — warn (interactive without visible focus state).
 //   • nonzero-tabindex    — warn (tabindex > 0 forces non-DOM order).
 //
@@ -225,12 +227,14 @@ export async function runTabOrder(opts: {
       /* ignore */
     }
 
-    const hasTrapLeak = violations.some((v) => v.kind === "focus-trap-leak");
-    const severity = hasTrapLeak
-      ? "fail"
-      : violations.length > 0
-        ? "warn"
-        : "pass";
+    // focus-trap-leak is a STATIC-MARKUP heuristic and cannot soundly prove a
+    // real leak: correctly-built modals (Radix/Headless UI/shadcn) trap focus
+    // imperatively in JS and add `inert`/`aria-hidden` to background siblings
+    // only at runtime, never in SSR/source markup. Emitting a blocking `fail`
+    // hard-blocked every legitimate modal page in audit-strict. We surface it
+    // as a non-blocking hint (warn) like the other two static kinds; a true
+    // fail-grade detection is deferred to the real-browser Tab-synthesis path.
+    const severity = violations.length > 0 ? "warn" : "pass";
 
     const durationMs = Date.now() - startedAt;
     if (durationMs > TAB_ORDER_BUDGET_MS) {

@@ -167,6 +167,18 @@ async function runConsoleScan(opts) {
         aggregate.push(...scanText(text, "static-script"));
       }
     }
+    const noInputs = opts.sessionLogPath === void 0 && opts.bridgeUrl === void 0 && (opts.cssOrHtml === void 0 || !/<script\b/i.test(opts.cssOrHtml));
+    if (noInputs && aggregate.length === 0) {
+      return {
+        name: "console-scan",
+        severity: "pass",
+        durationMs: Date.now() - startedAt,
+        skipped: {
+          reason: "error",
+          detail: "no session log, bridge, or <script> content to scan"
+        }
+      };
+    }
     const severity = aggregate.some((c) => SEVERE_RE.test(c.message)) ? "fail" : aggregate.length > 0 ? "warn" : "pass";
     return {
       name: "console-scan",

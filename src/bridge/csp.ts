@@ -1,6 +1,11 @@
-// wisp-design — CSP helpers for source-inject (Phase 3 wires these into the
-// HTML splice). Pure functions, no I/O. Reversible: `markOriginalCsp` records
-// the pre-inject CSP so Phase 3 can restore on `live --stop`.
+// wisp-design — CSP helpers for dev-mode CSP relaxation. Pure functions, no
+// I/O. OPT-IN and not yet wired into bridge/server.ts: the bridge serves
+// live.js + data endpoints but does not proxy or rewrite the dev server's HTML,
+// so there is no in-process CSP header to patch today. These helpers are kept
+// (and unit-tested in tests/bridge/csp.test.ts) so the source-inject layer can
+// consume them when CSP auto-patching is wired up. Reversible by design:
+// `markOriginalCsp` records the pre-inject CSP and `readMarkedOriginalCsp`
+// reads it back so a future `live --stop` can restore the original.
 
 const HEAD_OPEN_RE = /<head(\s[^>]*)?>/i;
 
@@ -72,10 +77,10 @@ export function markOriginalCsp(html: string, original: string | null): string {
 }
 
 export function readMarkedOriginalCsp(html: string): string | null | undefined {
-  // Companion to `markOriginalCsp` — Phase 3 source/inject.ts uses it on
-  // `--stop` to restore the original CSP. undefined = tag absent (never
-  // injected); null = injected onto a page that had no CSP to begin with;
-  // string = original header to restore.
+  // Companion to `markOriginalCsp` — the source-inject layer can use it on
+  // `--stop` to restore the original CSP once CSP auto-patching is wired.
+  // undefined = tag absent (never injected); null = injected onto a page that
+  // had no CSP to begin with; string = original header to restore.
   const re =
     /<meta\s+name=["']data-wisp-csp-original["']\s+content=["']([^"']*)["']\s*\/?>/i;
   const m = re.exec(html);

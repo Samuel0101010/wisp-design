@@ -90,6 +90,62 @@ describe("hard-ban: gradient-text-headline", () => {
 });
 
 // ---------------------------------------------------------------------------
+// JSX inline-style FALSE-NEGATIVE — camelCase property-name slop
+//
+// The same slop that fires in a .css file is MISSED when written as a JSX
+// inline-style object because the property names are camelCase
+// (`backdropFilter`, `WebkitBackgroundClip`/`backgroundClip`). The plugin
+// explicitly targets React/.tsx, so the camelCase forms must be caught too.
+// ---------------------------------------------------------------------------
+
+describe("JSX inline-style camelCase (FN guard)", () => {
+  it("fires default-glassmorphism on style={{ backdropFilter: 'blur(12px)' }}", async () => {
+    const tsx = `function C(){return <div style={{ backdropFilter: "blur(12px)" }}>x</div>;}`;
+    expectRule(await violationsOf(tsx), "default-glassmorphism");
+  });
+
+  it("does NOT fire glassmorphism on backdropFilter: 'blur(0)' (no-op)", async () => {
+    const tsx = `function C(){return <div style={{ backdropFilter: "blur(0px)" }}>x</div>;}`;
+    expectNoRule(await violationsOf(tsx), "default-glassmorphism");
+  });
+
+  it("fires gradient-text-headline on WebkitBackgroundClip:'text' + color:'transparent'", async () => {
+    const tsx = `function C(){return <h1 style={{ WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>Title</h1>;}`;
+    expectRule(await violationsOf(tsx), "gradient-text-headline");
+  });
+
+  it("fires gradient-text-headline on backgroundClip:'text' + color:'transparent'", async () => {
+    const tsx = `function C(){return <h2 style={{ backgroundClip: "text", color: "transparent" }}>Heading</h2>;}`;
+    expectRule(await violationsOf(tsx), "gradient-text-headline");
+  });
+
+  it("does NOT fire gradient-text on backgroundClip:'text' WITHOUT color:transparent", async () => {
+    const tsx = `function C(){return <h2 style={{ backgroundClip: "text", color: "#111" }}>Heading</h2>;}`;
+    expectNoRule(await violationsOf(tsx), "gradient-text-headline");
+  });
+
+  it("camelCase slop also fires through the extracted-CSS path (runAntiSlopOnFiles)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wisp-jsx-fn-"));
+    try {
+      const file = join(dir, "Glass.tsx");
+      writeFileSync(
+        file,
+        `export function Glass(){return <div style={{ backdropFilter: "blur(10px)" }}>x</div>;}`,
+      );
+      const res = await runAntiSlopOnFiles([file], {
+        mode: "audit",
+        projectRoot: dir,
+        perCallBudgetMs: 10_000,
+      });
+      const v = (res.violations ?? []) as AntiSlopViolation[];
+      expect(v.some((x) => x.ruleId === "default-glassmorphism")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // HARD-BAN #3 — default-glassmorphism
 // ---------------------------------------------------------------------------
 

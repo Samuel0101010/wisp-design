@@ -21,14 +21,35 @@ function vs(res: { violations?: ReadonlyArray<unknown> }): TabOrderViolation[] {
 }
 
 describe("runTabOrder — focus-trap-leak", () => {
-  it("detects leak: open dialog + focusable outside", async () => {
+  it("detects leak: open dialog + focusable outside (non-blocking warn)", async () => {
     const html = pageWith(
       `<dialog open aria-modal="true"><button>X</button></dialog><button>Outside</button>`,
     );
     const res = await runTabOrder({ html });
     const leak = vs(res).find((v) => v.kind === "focus-trap-leak");
     expect(leak).toBeDefined();
-    expect(res.severity).toBe("fail");
+    // A static-markup heuristic cannot soundly prove a trap leak — correctly-
+    // built modals (Radix/Headless/shadcn) trap focus in JS at runtime. So
+    // focus-trap-leak is surfaced as a non-blocking hint (warn), never a
+    // hard-blocking fail.
+    expect(res.severity).toBe("warn");
+  });
+
+  it("does NOT hard-fail a typical SSR'd Radix/shadcn modal (false-positive guard)", async () => {
+    // Standard shadcn/Radix dialog static markup: header nav + main CTA +
+    // role=dialog aria-modal=true. The background siblings carry NO static
+    // `inert`/`aria-hidden` because the trap library applies them in JS at
+    // runtime. Under the old fail-path this hard-blocked every such page in
+    // audit-strict; it must now be a non-blocking warn at most.
+    const html = pageWith(
+      `<header><a href="/">Home</a><a href="/pricing">Pricing</a></header>` +
+        `<main><button>Open</button></main>` +
+        `<div role="dialog" aria-modal="true"><input /><button>Save</button></div>`,
+    );
+    const res = await runTabOrder({ html });
+    const leak = vs(res).find((v) => v.kind === "focus-trap-leak");
+    expect(leak).toBeDefined(); // still surfaced as a hint
+    expect(res.severity).not.toBe("fail");
   });
 
   it("does NOT flag closed dialog (no aria-modal=true and no native open dialog)", async () => {

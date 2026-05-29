@@ -42,6 +42,20 @@ function parseFormat(raw: string | undefined): Format | null {
   return null;
 }
 
+// A `--task` id is appended to `.wisp/sessions/<id>.jsonl`. Reject path
+// separators / dot-segments so a traversal id (e.g. `../../secret`) can't
+// escape the sessions dir and read an arbitrary file. Mirrors the guard in
+// src/session/replay.ts:sessionLogPath. See .fix-specs/session.md #1.
+function isSafeTaskId(id: string): boolean {
+  return (
+    id.length > 0 &&
+    !id.includes("/") &&
+    !id.includes("\\") &&
+    id !== "." &&
+    id !== ".."
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Render — text / json / markdown.
 // ---------------------------------------------------------------------------
@@ -329,6 +343,13 @@ export async function runHistory(args: string[]): Promise<number> {
   // Single-session render path.
   let sessionId: string | null;
   if (taskId !== undefined && taskId !== "") {
+    if (!isSafeTaskId(taskId)) {
+      writeError({
+        code: "BAD_TASK_ID",
+        message: `history: --task id must not contain path separators or dot-segments, got "${taskId}"`,
+      });
+      return EXIT_ARG;
+    }
     sessionId = taskId;
   } else {
     try {

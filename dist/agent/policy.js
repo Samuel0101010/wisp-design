@@ -261,6 +261,9 @@ function sessionsDir(projectRoot) {
   return join(resolve(projectRoot), SESSIONS_DIR);
 }
 function sessionLogPath(projectRoot, sessionId2) {
+  if (sessionId2.length === 0 || sessionId2.includes("/") || sessionId2.includes("\\") || sessionId2 === "." || sessionId2 === "..") {
+    throw new Error(`session-replay: invalid sessionId "${sessionId2}"`);
+  }
   return join(sessionsDir(projectRoot), `${sessionId2}.jsonl`);
 }
 async function readEntries(path) {
@@ -331,7 +334,7 @@ async function listSessions(opts) {
     if (first === void 0) continue;
     const summary = {
       sessionId: sessionId2,
-      startedAt: first.kind === "session-start" ? first.ts : first.ts,
+      startedAt: first.ts,
       entriesCount: entries.length,
       mtimeMs
     };

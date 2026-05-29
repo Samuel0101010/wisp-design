@@ -153,22 +153,22 @@ const CONTAINER_VARIANTS: Record<Intent, Variant[]> = {
   spacious: [
     BASELINE,
     {
-      css: `:scope { padding: 2em !important; gap: 1em !important; }`,
+      css: `:scope { /* @param: kind=range min=16 max=64 step=4 label="padding" */ --wisp-pad: 32px; padding: var(--wisp-pad) !important; gap: 1em !important; }`,
       rationale: "Generous padding: doubles internal spacing — feels premium and unhurried.",
     },
     {
-      css: `:scope { padding: 3em !important; gap: 1.5em !important; }`,
+      css: `:scope { /* @param: kind=range min=16 max=64 step=4 label="padding" */ --wisp-pad: 48px; padding: var(--wisp-pad) !important; gap: 1.5em !important; }`,
       rationale: "Maximum breathing room: even more space for content to settle.",
     },
   ],
   compact: [
     BASELINE,
     {
-      css: `:scope { padding: 0.75em !important; gap: 0.25em !important; }`,
+      css: `:scope { /* @param: kind=range min=0 max=24 step=2 label="padding" */ --wisp-pad: 12px; padding: var(--wisp-pad) !important; gap: 0.25em !important; }`,
       rationale: "Compact: tighter internal spacing — suits dense info or small cards.",
     },
     {
-      css: `:scope { padding: 0.5em !important; gap: 0 !important; }`,
+      css: `:scope { /* @param: kind=range min=0 max=24 step=2 label="padding" */ --wisp-pad: 8px; padding: var(--wisp-pad) !important; gap: 0 !important; }`,
       rationale: "Ultra-tight: minimal padding, edge-to-edge content.",
     },
   ],
@@ -344,22 +344,22 @@ const TEXT_VARIANTS: Record<Intent, Variant[]> = {
   "weight-heavier": [
     BASELINE,
     {
-      css: `:scope, :scope * { font-weight: 600 !important; }`,
+      css: `:scope { /* @param: kind=range min=300 max=900 step=100 label="weight" */ --wisp-weight: 600; } :scope, :scope * { font-weight: var(--wisp-weight) !important; }`,
       rationale: "Semi-bold: weight 600 — substantial without shouting.",
     },
     {
-      css: `:scope, :scope * { font-weight: 800 !important; letter-spacing: -0.02em !important; }`,
+      css: `:scope { /* @param: kind=range min=300 max=900 step=100 label="weight" */ --wisp-weight: 800; } :scope, :scope * { font-weight: var(--wisp-weight) !important; letter-spacing: -0.02em !important; }`,
       rationale: "Display heavy: weight 800 + tight tracking.",
     },
   ],
   "weight-lighter": [
     BASELINE,
     {
-      css: `:scope, :scope * { font-weight: 300 !important; }`,
+      css: `:scope { /* @param: kind=range min=100 max=500 step=100 label="weight" */ --wisp-weight: 300; } :scope, :scope * { font-weight: var(--wisp-weight) !important; }`,
       rationale: "Light: weight 300 reads as delicate.",
     },
     {
-      css: `:scope, :scope * { font-weight: 200 !important; letter-spacing: 0.02em !important; }`,
+      css: `:scope { /* @param: kind=range min=100 max=500 step=100 label="weight" */ --wisp-weight: 200; } :scope, :scope * { font-weight: var(--wisp-weight) !important; letter-spacing: 0.02em !important; }`,
       rationale: "Hairline: weight 200 + wider tracking — minimalist.",
     },
   ],
@@ -388,22 +388,22 @@ const TEXT_VARIANTS: Record<Intent, Variant[]> = {
   spacious: [
     BASELINE,
     {
-      css: `:scope, :scope * { line-height: 1.6 !important; letter-spacing: 0.01em !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2.4 step=0.1 label="line height" */ --wisp-leading: 1.6; } :scope, :scope * { line-height: var(--wisp-leading) !important; letter-spacing: 0.01em !important; }`,
       rationale: "Open reading: 1.6 line-height + slight tracking — easier to scan.",
     },
     {
-      css: `:scope, :scope * { line-height: 1.8 !important; letter-spacing: 0.03em !important; word-spacing: 0.1em !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2.4 step=0.1 label="line height" */ --wisp-leading: 1.8; } :scope, :scope * { line-height: var(--wisp-leading) !important; letter-spacing: 0.03em !important; word-spacing: 0.1em !important; }`,
       rationale: "Long-form: 1.8 line-height + wider tracking — magazine reading feel.",
     },
   ],
   compact: [
     BASELINE,
     {
-      css: `:scope, :scope * { line-height: 1.25 !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2 step=0.05 label="line height" */ --wisp-leading: 1.25; } :scope, :scope * { line-height: var(--wisp-leading) !important; }`,
       rationale: "Tight: 1.25 line-height — denser block of type.",
     },
     {
-      css: `:scope, :scope * { line-height: 1.1 !important; letter-spacing: -0.01em !important; }`,
+      css: `:scope { /* @param: kind=range min=1 max=2 step=0.05 label="line height" */ --wisp-leading: 1.1; } :scope, :scope * { line-height: var(--wisp-leading) !important; letter-spacing: -0.01em !important; }`,
       rationale: "Ultra-tight: 1.1 line-height + tighter tracking — micro-typography.",
     },
   ],

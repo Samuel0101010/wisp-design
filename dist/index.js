@@ -211,6 +211,50 @@ function runTailwindClassMatchers(content, ctx) {
   }
   return { violations, defaultBlueClassHits };
 }
+function runJsxInlineStyleMatchers(content) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  function push(v) {
+    const key = `${v.ruleId}:${v.location?.line ?? 0}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  }
+  JSX_BACKDROP_FILTER_RE.lastIndex = 0;
+  let m;
+  while ((m = JSX_BACKDROP_FILTER_RE.exec(content)) !== null) {
+    const before = content.slice(Math.max(0, m.index - 100), m.index);
+    const after = content.slice(m.index, Math.min(content.length, m.index + 100));
+    if (/wisp-justify/.test(before) || /wisp-justify/.test(after)) continue;
+    const { line, column } = lineColAt(content, m.index);
+    push({
+      ruleId: "default-glassmorphism",
+      severity: "fail",
+      message: "glassmorphism via JSX inline style (backdropFilter: blur) \u2014 default AI vibe.",
+      suggestedFix: "Add `/* wisp-justify: <reason> */` within 100 chars, or remove the backdropFilter.",
+      location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+    });
+    if (m.index === JSX_BACKDROP_FILTER_RE.lastIndex) JSX_BACKDROP_FILTER_RE.lastIndex += 1;
+  }
+  JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex = 0;
+  while ((m = JSX_BACKGROUND_CLIP_TEXT_RE.exec(content)) !== null) {
+    const start = Math.max(0, m.index - 200);
+    const end = Math.min(content.length, m.index + m[0].length + 200);
+    const window = content.slice(start, end);
+    if (JSX_COLOR_TRANSPARENT_RE.test(window)) {
+      const { line, column } = lineColAt(content, m.index);
+      push({
+        ruleId: "gradient-text-headline",
+        severity: "fail",
+        message: "gradient text via JSX inline style (backgroundClip: 'text' + color: 'transparent') \u2014 kills scanability.",
+        suggestedFix: "Use a solid colour. Gradient text only for purely decorative, non-interactive accents.",
+        location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) }
+      });
+    }
+    if (m.index === JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex) JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex += 1;
+  }
+  return out;
+}
 function aggregateRoundNumberWhitespace(content, _ctx) {
   let totalCount = 0;
   let roundCount = 0;
@@ -389,6 +433,7 @@ async function runAntiSlop(css, ctx) {
     const tw = runTailwindClassMatchers(sourceForClassScan, aggCtx);
     for (const v of tw.violations) violations.push(v);
     parkedDefaultBlueClassHits = tw.defaultBlueClassHits;
+    for (const v of runJsxInlineStyleMatchers(sourceForClassScan)) violations.push(v);
   }
   for (const rule of RULES) {
     if (rule.id === "single-weight-typography") continue;
@@ -577,12 +622,15 @@ function formatWarnMessage(hits) {
   }
   return [head, ...lines].join("\n");
 }
-var CLASS_ATTR_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
+var CLASS_ATTR_RE, JSX_BACKDROP_FILTER_RE, JSX_BACKGROUND_CLIP_TEXT_RE, JSX_COLOR_TRANSPARENT_RE, ROUND_NUMBER_WHITESPACE_MIN_TOTAL, ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD, ROUND_NUMBER_VALUES, ANY_SPACING_DECL_RE, DEFAULT_BLUE_CSS_RE, DEFAULT_BLUE_TW_CLASS_RE, DEFAULT_BLUE_MIN_OCCURRENCES, RULES, RULES_BY_ID, TEXT_TAG_RE, TEXT_DECL_RE, ICON_HINT_RE, FONT_WEIGHT_RE, MIN_SINGLE_WEIGHT_OCCURRENCES, STYLE_BLOCK_RE, JSX_INLINE_STYLE_RE, INLINE_STYLE_ATTR_RE, UI_EXTENSIONS;
 var init_anti_slop_linter = __esm({
   "src/verify/anti-slop-linter.ts"() {
     "use strict";
     init_verify();
     CLASS_ATTR_RE = /\b(?:className|class)\s*=\s*"([^"]*)"/g;
+    JSX_BACKDROP_FILTER_RE = /\bbackdropFilter\s*:\s*['"][^'"]*\bblur\(\s*(?!0(?:px)?\s*\))[^)]+\)/g;
+    JSX_BACKGROUND_CLIP_TEXT_RE = /\b(?:backgroundClip|WebkitBackgroundClip)\s*:\s*['"]\s*text\s*['"]/g;
+    JSX_COLOR_TRANSPARENT_RE = /\bcolor\s*:\s*['"]\s*transparent\s*['"]/;
     ROUND_NUMBER_WHITESPACE_MIN_TOTAL = 4;
     ROUND_NUMBER_WHITESPACE_RATIO_THRESHOLD = 0.7;
     ROUND_NUMBER_VALUES = /* @__PURE__ */ new Set(["16", "24", "32", "48"]);
@@ -1039,10 +1087,12 @@ async function runStopHook() {
     if (changedFiles.length === 0) return 0;
     if (budgetExceeded(started)) return 0;
     const { runAntiSlopOnFiles: runAntiSlopOnFiles2, formatBlockMessage: formatBlockMessage2, formatWarnMessage: formatWarnMessage2 } = await Promise.resolve().then(() => (init_anti_slop_linter(), anti_slop_linter_exports));
+    const remainingMs = EFFECTIVE_STOP_HOOK_LIMIT_MS - (Date.now() - started) - STOP_HOOK_TAIL_RESERVE_MS;
     const result = await runAntiSlopOnFiles2(changedFiles, {
       mode: "stop-hook",
       projectRoot: process.cwd(),
-      budgetStartedAt: started
+      budgetStartedAt: Date.now(),
+      perCallBudgetMs: Math.max(20, remainingMs)
     });
     const hardBanHits = result.violations === void 0 ? [] : result.violations.filter(
       (v) => v.severity === "fail"
@@ -1050,8 +1100,8 @@ async function runStopHook() {
     if (hardBanHits.length === 0) return 0;
     if (process.env.WISP_DESIGN_STRICT === "1") {
       const payload = JSON.stringify({
-        permissionDecision: "block",
-        message: formatBlockMessage2(hardBanHits)
+        decision: "block",
+        reason: formatBlockMessage2(hardBanHits)
       });
       process.stdout.write(`${payload}
 `);
@@ -1175,8 +1225,12 @@ ${out.exitCode === 0 ? "wisp-design doctor: OK" : "wisp-design doctor: FAIL"}
     const spec = rel;
     try {
       return await import(spec);
-    } catch {
-      return null;
+    } catch (err) {
+      const code = err?.code;
+      const msg = err instanceof Error ? err.message : "";
+      const isAbsent = code === "ERR_MODULE_NOT_FOUND" || code === "ENOENT" || /Cannot find module/i.test(msg);
+      if (isAbsent) return null;
+      throw err;
     }
   };
   const callRunner = async (mod, fn, args, phaseName, phase = "4") => {

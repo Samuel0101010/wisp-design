@@ -164,7 +164,7 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 | `PostToolUse` Hook (after Edit/Write auf .tsx/.jsx/.svelte/.vue) | jede UI-Source-File-Edit | append zu Session-Log; trigger HMR-wait + console-scan |
 | `Stop` Hook | vor Final-Antwort | run Verification-Gate; block stop bei AA-fail (im `--strict`-Mode) |
 
-**Wichtig:** Im `--strict` Mode blockt `Stop` mit `permissionDecision: "block"` und Citation der gebrochenen Regel — wie wisp-receipt. Default `warn` damit Plugin nicht intrusive ist.
+**Wichtig:** Im `--strict` Mode blockt `Stop` mit dem Stop-Hook-Contract `{decision: "block", reason: …}` und Citation der gebrochenen Regel — wie wisp-receipt. (NICHT `permissionDecision`/`message` — das ist das PreToolUse-Schema und wird vom Stop-Event ignoriert.) Default `warn` damit Plugin nicht intrusive ist.
 
 ## Tech-Stack
 
@@ -172,7 +172,7 @@ User klickt Element im laufenden Dev-Server an → freitext-Prompt → **3 disti
 plugin manifest:    .claude-plugin/plugin.json + marketplace.json (v3.x schema)
 build:              tsup → dist/index.js (committed; plugin-clone hat keinen build step)
 language:           TypeScript strict, ESM
-browser runtime:    Vanilla JS bundle live.js (kein React, < 50kb)
+browser runtime:    Vanilla JS bundle live.js (kein React, ~81kb; Budget 95kb seit a11y-radar + morph-slider, von 50kb angehoben)
 bridge:             Plain Node HTTP + SSE, no Express, no WebSocket
 transport:          Long-Poll (270s slice wegen Node fetch 300s cap)
 hot-path budget:    p95 ≤ 3s (LLM-generate) + ≤ 1s (verification parallel)
@@ -306,7 +306,7 @@ mcp__ruflo__hooks_route { task: "<aktueller-task>" }
 | 4 — Agent-Loop + Skill-Korpus | completed | v0.5.0-prerelease | 4-agent pipeline (architect → coder+content-curator parallel → tester); 4 agent modules (poll-loop + skills-index + sync + _helpers); 30 skill files / 2854 markdown lines (SKILL.md + 6 reference prompts + anti-slop policy + 3 methodology files + 13 anchor files + directions INDEX + corpus INDEX/sample); lazy-load CLI pattern; tsup multi-entry now emits dist/agent/*.js; doctor 9/9 OK with new skills-layout checks; 77 new tests + 270 prior = 347 cumulative green |
 | 5 — Verification-Gate (USP) | completed | v0.6.0-prerelease | 4-agent pipeline (architect → coder+security parallel → tester); 8 verify modules (7 checks + _sandbox + gate); anti-slop 7 hard-bans + 5 soft-suggestions FPR 0.00% / FN 0.00%; Playwright safe-launch with 6 URL guards + chromium hardening; 5-mode orchestrator (stop-hook/live-accept/live-with-screenshot/audit/audit-strict); audit CLI with text/json/markdown output; doctor 12/12 OK with optionalDep WARN; 155 new tests + 347 prior = 502 cumulative green |
 | 6 — Session-Replay + Component-Lib-Awareness | completed | v0.7.0-prerelease | 4-agent pipeline (architect → coder-foundation + coder-features parallel → tester); 7 new modules (session/logger + session/replay + agent/history + agent/policy + agent/component-detect + agent/morph + source/structure-variant-mode); 5 Improvements landed (#2 undo-stack with 11 helpers, #3 morph interpolation, #5 policy proposal with 3-consecutive trigger, #6 8 structure-variant kinds, #11 6-lib component detection); Phase-5 round-number-whitespace fixed via file-level aggregation; doctor 14 checks (12 OK + 1 WARN policy.md + 1 OK sessions lazy); 130 new tests + 502 prior = 626 cumulative green |
-| 7 — Launch | pending | — | — |
+| 7 — Launch | in progress | — | **QA + hardening pass (2026-05-29)**: full multi-agent review (47 review agents) + live-browser E2E (real Chromium) surfaced 43 verified findings; all resolved via a 7-agent TDD fix-team with disjoint file-ownership. **3 critical**: `inject→remove` wiped files without a trailing newline to empty (data loss on every `live` SIGINT shutdown); strict Stop-hook emitted `permissionDecision/message` instead of the honored `{decision,reason}` contract (block USP never fired); anti-slop budget-clock spanned the git subprocess. Plus multi-viewport launch repair, zero-roundtrip slider snap-back, JSX inline-style anti-slop detection, `@param` slider + morph activation, long-poll waiter/timer leak, `history --task` path-traversal guard, Windows REFUSE_LIST case-bypass. typecheck now green (was red), **1068/1068 tests green** (+77 regression tests), build green; bundle/version/Stop-hook doc drift reconciled. Remaining launch items (README+GIF, comparison/architecture docs, CI matrix, public v1.0.0 release) still pending. |
 
 ## References
 

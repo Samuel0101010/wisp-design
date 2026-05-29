@@ -387,6 +387,89 @@ function runTailwindClassMatchers(content: string, ctx: AggregatorContext): Tail
 }
 
 // ---------------------------------------------------------------------------
+// JSX inline-style camelCase matchers.
+//
+// The CSS-property regexes are kebab-case (`backdrop-filter`,
+// `background-clip`) so JSX inline-style OBJECTS — which use camelCase keys
+// (`backdropFilter`, `backgroundClip` / `WebkitBackgroundClip`) — slip past
+// them as a false-negative even though the SAME slop fires in a `.css` file.
+// extractCssFromFile's camelCase→kebab rewrite also fails to help: it leaves
+// the value quoted (`backdrop-filter: 'blur(12px)'`) which the value-anchored
+// kebab regexes no longer match, and it strips the selector the gradient-text
+// rule needs. We therefore scan the RAW source here for the camelCase forms.
+// These run in the same upfront source-scan pass as the className matchers,
+// so they reach both the raw-source path and the extracted-CSS path.
+// ---------------------------------------------------------------------------
+
+// `backdropFilter: "blur(Npx)"` with a non-zero blur radius. blur(0)/blur(0px)
+// are no-ops and intentionally NOT flagged (mirrors the CSS-rule guidance).
+const JSX_BACKDROP_FILTER_RE = /\bbackdropFilter\s*:\s*['"][^'"]*\bblur\(\s*(?!0(?:px)?\s*\))[^)]+\)/g;
+// `backgroundClip`/`WebkitBackgroundClip: "text"` — camelCase JSX forms of
+// `background-clip`. The standard React key is lowercase `backgroundClip`;
+// the vendor-prefixed form capitalises to `WebkitBackgroundClip`.
+const JSX_BACKGROUND_CLIP_TEXT_RE = /\b(?:backgroundClip|WebkitBackgroundClip)\s*:\s*['"]\s*text\s*['"]/g;
+// `color: "transparent"` JSX form — the second half of the gradient-text tell.
+const JSX_COLOR_TRANSPARENT_RE = /\bcolor\s*:\s*['"]\s*transparent\s*['"]/;
+
+function runJsxInlineStyleMatchers(content: string): AntiSlopViolation[] {
+  const out: AntiSlopViolation[] = [];
+  const seen = new Set<string>(); // key = ruleId:line
+
+  function push(v: AntiSlopViolation): void {
+    const key = `${v.ruleId}:${v.location?.line ?? 0}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(v);
+  }
+
+  // default-glassmorphism — camelCase backdropFilter blur.
+  JSX_BACKDROP_FILTER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = JSX_BACKDROP_FILTER_RE.exec(content)) !== null) {
+    // Honour the same `wisp-justify` escape hatch as the CSS rule (±100 chars).
+    const before = content.slice(Math.max(0, m.index - 100), m.index);
+    const after = content.slice(m.index, Math.min(content.length, m.index + 100));
+    if (/wisp-justify/.test(before) || /wisp-justify/.test(after)) continue;
+    const { line, column } = lineColAt(content, m.index);
+    push({
+      ruleId: "default-glassmorphism",
+      severity: "fail",
+      message:
+        "glassmorphism via JSX inline style (backdropFilter: blur) — default AI vibe.",
+      suggestedFix:
+        "Add `/* wisp-justify: <reason> */` within 100 chars, or remove the backdropFilter.",
+      location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) },
+    });
+    if (m.index === JSX_BACKDROP_FILTER_RE.lastIndex) JSX_BACKDROP_FILTER_RE.lastIndex += 1;
+  }
+
+  // gradient-text-headline — camelCase (Webkit)BackgroundClip:"text" paired
+  // with a nearby color:"transparent" (within the same style object, ±200
+  // chars in either direction).
+  JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex = 0;
+  while ((m = JSX_BACKGROUND_CLIP_TEXT_RE.exec(content)) !== null) {
+    const start = Math.max(0, m.index - 200);
+    const end = Math.min(content.length, m.index + m[0].length + 200);
+    const window = content.slice(start, end);
+    if (JSX_COLOR_TRANSPARENT_RE.test(window)) {
+      const { line, column } = lineColAt(content, m.index);
+      push({
+        ruleId: "gradient-text-headline",
+        severity: "fail",
+        message:
+          "gradient text via JSX inline style (backgroundClip: 'text' + color: 'transparent') — kills scanability.",
+        suggestedFix:
+          "Use a solid colour. Gradient text only for purely decorative, non-interactive accents.",
+        location: { line, column, cssSnippet: snippet(content, m.index, m[0].length) },
+      });
+    }
+    if (m.index === JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex) JSX_BACKGROUND_CLIP_TEXT_RE.lastIndex += 1;
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Rule table — pre-compiled at module-load. Keeping the table READONLY makes
 // the regexes shared across every call; the JS engine's regex cache picks up
 // the literal-RE optimisation path.
@@ -945,6 +1028,9 @@ export async function runAntiSlop(
     const tw = runTailwindClassMatchers(sourceForClassScan, aggCtx);
     for (const v of tw.violations) violations.push(v);
     parkedDefaultBlueClassHits = tw.defaultBlueClassHits;
+    // JSX inline-style camelCase forms (backdropFilter / backgroundClip) that
+    // the kebab-case CSS regexes cannot reach.
+    for (const v of runJsxInlineStyleMatchers(sourceForClassScan)) violations.push(v);
   }
 
   for (const rule of RULES) {

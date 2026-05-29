@@ -29,6 +29,20 @@ function sessionsDir(projectRoot: string): string {
 }
 
 function sessionLogPath(projectRoot: string, sessionId: string): string {
+  // Defensive: sessionId is appended directly to the sessions dir, so a value
+  // containing path separators or `.`/`..` segments would escape
+  // `.wisp/sessions/` and read an arbitrary `<x>.jsonl` on disk. The sibling
+  // WRITER (src/source/undo-stack.ts) rejects exactly this; the reader must
+  // too, or the writer's guard is defeated. See .fix-specs/session.md #1.
+  if (
+    sessionId.length === 0 ||
+    sessionId.includes("/") ||
+    sessionId.includes("\\") ||
+    sessionId === "." ||
+    sessionId === ".."
+  ) {
+    throw new Error(`session-replay: invalid sessionId "${sessionId}"`);
+  }
   return join(sessionsDir(projectRoot), `${sessionId}.jsonl`);
 }
 
@@ -366,8 +380,7 @@ async function listSessions(opts: { projectRoot: string }): Promise<
     if (first === undefined) continue;
     const summary: SessionSummary = {
       sessionId,
-      startedAt:
-        first.kind === "session-start" ? first.ts : first.ts,
+      startedAt: first.ts,
       entriesCount: entries.length,
       mtimeMs,
     };

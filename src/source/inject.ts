@@ -143,6 +143,24 @@ export async function injectLiveScript(
     inline: parsedOpts.inline,
   });
 
+  // Find insertion point.
+  const { startOffset, endOffset, startLine, endLine } = chooseInsertionPoint(
+    canonical,
+    parsedOpts.preferredAnchor,
+    fileType,
+  );
+
+  // EOF guard: when appending at end-of-file onto content that doesn't end with
+  // a newline, the open-marker would otherwise glue onto the file's last line.
+  // findMarkerBlock would then treat that line's start (offset 0 for a one-line
+  // file) as the marker-line start and removal would slice away user content.
+  // Prepend a `\n` so the marker block always begins on its own physical line.
+  // `eofPrefixNl` is recorded in the marker so removeLiveScript can strip that
+  // same `\n` and restore the no-trailing-newline original byte-for-byte.
+  const atEof = startOffset === canonical.length;
+  const needsLeadingNl =
+    atEof && canonical.length > 0 && canonical[canonical.length - 1] !== "\n";
+
   const startBody = serializeMarkerBody("inject-start", {
     injectId: marker.injectId,
     insertedAt: marker.insertedAt,
@@ -150,6 +168,7 @@ export async function injectLiveScript(
     token: marker.token,
     beforeHash: marker.beforeHash,
     inline: marker.inline,
+    eofPrefixNl: needsLeadingNl,
   });
   const endBody = serializeMarkerBody("inject-end", {
     injectId: marker.injectId,
@@ -165,17 +184,10 @@ export async function injectLiveScript(
     `${scriptTag}\n` +
     `${syntax.close(endBody)}`;
 
-  // Find insertion point.
-  const { startOffset, endOffset, startLine, endLine } = chooseInsertionPoint(
-    canonical,
-    fileType,
-    parsedOpts.preferredAnchor,
-    block,
-  );
-
   // Splice using expandReplaceRange (zero-width replace at startOffset, endOffset).
   const next =
     canonical.slice(0, startOffset) +
+    (needsLeadingNl ? "\n" : "") +
     block +
     "\n" +
     canonical.slice(endOffset);
@@ -253,11 +265,22 @@ export async function removeLiveScript(
   const injectId = parsed.payload.injectId ?? "";
   const expectedBeforeHash = parsed.payload.beforeHash ?? "";
 
+  // EOF-anchor restore: if inject prepended a leading `\n` before the marker
+  // block (because the original file had no trailing newline), consume that
+  // same `\n` here so the no-trailing-newline original is restored exactly.
+  const eofPrefixNl = parsed.payload.eofPrefixNl === "true";
+  const removeBlock =
+    eofPrefixNl &&
+    block.startOffset > 0 &&
+    canonical[block.startOffset - 1] === "\n"
+      ? { ...block, startOffset: block.startOffset - 1 }
+      : block;
+
   // Replace the marker block with nothing — also strip a trailing newline if
   // the splice would leave a double blank line.
-  const next = expandReplaceRange(canonical, block, "", eol);
+  const next = expandReplaceRange(canonical, removeBlock, "", eol);
   // Collapse a double-newline left at the splice site.
-  const collapsed = collapseDoubleBlank(next, block.startOffset);
+  const collapsed = collapseDoubleBlank(next, removeBlock.startOffset);
 
   // Byte-equivalence check: hash the first 256 bytes of the restored content
   // and compare to the marker's `beforeHash`.
@@ -307,9 +330,8 @@ interface InsertionPoint {
 
 function chooseInsertionPoint(
   canonical: string,
-  fileType: SourceFileType,
   _preferred: InjectOptions["preferredAnchor"],
-  block: string,
+  fileType: SourceFileType,
 ): InsertionPoint {
   // Strategy:
   //   1. Before `</head>` → preserve indentation of the closing tag.
@@ -321,29 +343,28 @@ function chooseInsertionPoint(
   // suboptimal but safe — the bridge owns SFC injection via dev-server hooks
   // for production use. Phase 3 covers the common HTML entry-point case.
   if (fileType === "html") {
+    // Anchor at the START of the line holding the closing tag, NOT at the `<`
+    // offset. Splicing mid-line would donate the tag's leading indentation to
+    // the marker block; removal would then strip that indentation and push the
+    // closing tag to column 0 permanently. Line-start anchoring keeps the
+    // marker on its own clean lines and leaves the closing tag untouched.
     const idx = canonical.search(/<\/head\s*>/i);
     if (idx !== -1) {
-      return offsetToInsertionPoint(canonical, idx);
+      return offsetToInsertionPoint(canonical, lineStartOffset(canonical, idx));
     }
     const bodyIdx = canonical.search(/<\/body\s*>/i);
     if (bodyIdx !== -1) {
-      return offsetToInsertionPoint(canonical, bodyIdx);
+      return offsetToInsertionPoint(
+        canonical,
+        lineStartOffset(canonical, bodyIdx),
+      );
     }
   }
-  // EOF — append, ensure leading newline if file doesn't end with one.
-  let eof = canonical.length;
-  if (canonical.length > 0 && canonical[canonical.length - 1] !== "\n") {
-    // We'll prepend a `\n` via insertion-point shift: keep eof, caller writes
-    // `block + "\n"`. But for EOF we want `\n + block` instead. Encode by
-    // returning a virtual offset that the caller handles uniformly — we
-    // overload by inserting at `eof` and letting the splice include `block`.
-    // Since chooseInsertionPoint cannot return that hint, we just splice
-    // a newline-prefixed block at EOF by inserting at `eof`. The caller's
-    // formula `slice(0, off) + block + "\n" + slice(off)` produces a
-    // graceful result.
-    eof = canonical.length;
-  }
-  void block;
+  // EOF — append at end-of-file. The caller's splice prepends a leading `\n`
+  // when the file doesn't already end with one, so the marker block always
+  // starts on its own physical line (see the `needsLeadingNl` guard in
+  // injectLiveScript). That keeps inject→remove byte-equivalent.
+  const eof = canonical.length;
   return {
     startOffset: eof,
     endOffset: eof,
@@ -368,6 +389,11 @@ function lineOfOffset(s: string, offset: number): number {
     if (s[i] === "\n") line += 1;
   }
   return line;
+}
+
+function lineStartOffset(s: string, off: number): number {
+  const nl = s.lastIndexOf("\n", off - 1);
+  return nl === -1 ? 0 : nl + 1;
 }
 
 function collapseDoubleBlank(s: string, near: number): string {

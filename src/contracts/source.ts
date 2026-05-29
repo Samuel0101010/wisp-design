@@ -492,13 +492,19 @@ export const GENERATED_MAGIC_COMMENT_REGEX = /^[\s\S]{0,200}@generated/i;
 // Refuse-list — match against the ABSOLUTE resolved path on either separator.
 // Implementations should test each regex against the resolved path; the
 // first match wins. Rationale lives in docs/source-edit-engine.md § refuse-list.
+// All directory patterns carry the `/i` flag: NTFS is case-insensitive, and
+// `path.resolve` preserves the caller's casing on Windows, so without `/i` a
+// differently-cased path (`.NEXT`, `DIST`, `Node_Modules`, `.GIT`) would refer
+// to the same protected on-disk dir yet slip past the guard. On POSIX this
+// slightly over-refuses a dir literally named e.g. `DIST`, but build/generated
+// dirs are conventionally lowercase, so the trade-off is acceptable.
 export const REFUSE_LIST: readonly RegExp[] = [
   // Build / dependency / generated output directories.
-  /[\/\\](node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|coverage|__generated__|target)[\/\\]/,
+  /[\/\\](node_modules|dist|build|out|\.next|\.nuxt|\.svelte-kit|coverage|__generated__|target)[\/\\]/i,
   // `.generated.<ext>` basename — auto-generated single files.
   /\.generated\.[a-z]+$/i,
   // `.git` internals.
-  /[\/\\]\.git[\/\\]/,
+  /[\/\\]\.git[\/\\]/i,
 ] as const;
 
 // Comment-syntax delimiters by file type — convenience export for tests that

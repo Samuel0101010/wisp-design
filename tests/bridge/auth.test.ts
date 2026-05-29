@@ -160,10 +160,12 @@ describe("guardPath — Rule 4 (symlink escape)", () => {
     rmSync(outside, { recursive: true, force: true });
   });
 
-  it("symlink pointing outside root → PATH_TRAVERSAL", () => {
+  it("symlink pointing outside root → PATH_TRAVERSAL", (ctx) => {
     if (!linkOk) {
-      // skip — symlink creation not permitted on this platform
-      return;
+      // Symlink creation was denied (stock non-admin Windows without Developer
+      // Mode). Mark SKIPPED so the missing traversal-defense coverage is
+      // visible in the report rather than reported as a vacuous green pass.
+      ctx.skip();
     }
     const r = guardPath("escape-link", root);
     expect(r.ok).toBe(false);

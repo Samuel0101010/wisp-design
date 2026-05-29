@@ -206,7 +206,7 @@ directly.
 | Global name           | `WispDesign` (exposes `WispDesignGlobal`)               |
 | Target                | `es2020`                                                |
 | Platform              | `browser`                                               |
-| Bundle size (minified)| **< 50 kB**                                             |
+| Bundle size (minified)| **< 95 kB** (budget bumped from 50 kB after a11y-radar + morph-slider; ~81 kB today, enforced by `tests/browser/bundle-size.test.ts`) |
 | Sourcemap             | `dist/live.js.map` (committed alongside `dist/live.js`) |
 | Dependencies          | **None at runtime.** `zod` is dev-time only — schemas live in the contracts; the browser bundle uses hand-rolled lightweight checks where validation is unavoidable. |
 | Framework             | **None.** Vanilla DOM. No React, no Preact, no Lit.     |

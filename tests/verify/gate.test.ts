@@ -6,7 +6,7 @@
 // skipped it still appears in the result with skipped:..., but never extra
 // names that aren't in the mode's check-set).
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { run } from "../../src/verify/gate.js";
 import {
@@ -266,4 +266,53 @@ describe("gate.run — honest skip semantics", () => {
     expect(fakeTimedOut.severity).toBe("warn");
     expect(fakeTimedOut.skipped?.reason).toBe("timeout");
   });
+});
+
+// ---------------------------------------------------------------------------
+// Mode-budget HARD ceiling — contracts/verify.ts invariant #3 says the mode
+// budget is a HARD ceiling: any check still running at started+budget is
+// aborted with { skipped: { reason: "timeout" } }. The bug: per-check timeouts
+// (CHECK_BUDGET_MS × mode-multiplier) can exceed the mode budget — e.g.
+// multi-viewport in live-with-screenshot is 3500×3 = 10500ms vs the 6000ms
+// mode budget — so a hung check blocks well past the documented ceiling.
+// ---------------------------------------------------------------------------
+
+describe("gate.run — mode budget is a hard per-check ceiling", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    vi.unmock("../../src/verify/multi-viewport.js");
+  });
+
+  it("caps a hung check at the mode budget, not the larger per-check budget", async () => {
+    // multi-viewport per-check budget (3500×3=10500) > live-with-screenshot
+    // mode budget (6000). Mock it to hang forever; the gate must abort it at
+    // the mode ceiling, surfacing a timeout-skip with durationMs ≤ mode budget.
+    vi.doMock("../../src/verify/multi-viewport.js", () => ({
+      runMultiViewport: () => new Promise<never>(() => {}), // never resolves
+    }));
+    vi.resetModules();
+    const { run: freshRun } = await import("../../src/verify/gate.js");
+    const modeBudget = MODE_TIMING_BUDGET_MS["live-with-screenshot"];
+
+    const startedAt = Date.now();
+    const report = await freshRun({
+      ...baseCtx(),
+      mode: "live-with-screenshot",
+      livePreviewUrl: "http://127.0.0.1:31337",
+      sessionId: "sid",
+      variantId: "v0",
+    });
+    const wall = Date.now() - startedAt;
+
+    const mv = report.checks.find((c) => c.name === "multi-viewport");
+    expect(mv).toBeDefined();
+    expect(mv!.skipped?.reason).toBe("timeout");
+    expect(mv!.severity).toBe("warn");
+    // The per-check budget (10500ms) must NOT govern — the mode ceiling does.
+    expect(mv!.durationMs).toBeLessThanOrEqual(modeBudget);
+    // And the whole run finishes within the mode budget (+ generous slack for
+    // the other parallel checks / CI jitter), never the 10.5s per-check value.
+    expect(wall).toBeLessThan(modeBudget + 2500);
+  }, 20_000);
 });

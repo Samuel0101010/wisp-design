@@ -5,7 +5,9 @@ import { defineConfig } from "tsup";
 //      `clean: true` wipes dist first; runs before the browser bundle in
 //      this array so the browser-side `clean: false` is safe.
 //   2. Browser bundle (IIFE, src/browser/index.ts → dist/live.js).
-//      Served by the bridge as `GET /live.js`. Must stay < 50 kB minified;
+//      Served by the bridge as `GET /live.js`. Budget 95 kB minified (bumped
+//      from the original 50 kB after a11y-radar + morph-slider; enforced by
+//      tests/browser/bundle-size.test.ts);
 //      no runtime deps; exposed on `window.WispDesign`. `noExternal: [/.*/]`
 //      forces every import to be inlined so nothing leaks to `require()`
 //      at runtime.
@@ -95,7 +97,7 @@ export default defineConfig([
     // the output would be `dist/live.global.js`.
     outExtension: () => ({ js: ".js" }),
     banner: {
-      js: "/*! wisp-design live.js v0.3.0-prerelease — MIT */",
+      js: "/*! wisp-design live.js v0.11.0-prerelease — MIT */",
     },
   },
 ]);

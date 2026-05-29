@@ -9,8 +9,12 @@
 //      is NO `@media (prefers-reduced-motion: reduce)` block that overrides
 //      them → warn.
 //   2. If any animation duration is ≥5s (literally 5s+) WITHOUT a
-//      `prefers-reduced-motion` guard → fail (long auto-playing animation
-//      is the worst category for vestibular sensitivity).
+//      `prefers-reduced-motion` guard → still warn (a long auto-playing
+//      animation is the worst category for vestibular sensitivity, so it is
+//      surfaced as its own `@long-motion[Ns]` violation, but per spec the
+//      whole check is warn-only in v0.x — see the warn-only note below and
+//      contracts/verify.ts invariant #4). Promotion to `fail` is deferred to
+//      the Phase-6 pixelmatch two-render diff.
 //
 // Budget: 600ms (`REDUCED_MOTION_BUDGET_MS`). Pure regex over the CSS body.
 

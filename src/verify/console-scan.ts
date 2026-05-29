@@ -194,6 +194,26 @@ export async function runConsoleScan(opts: {
       }
     }
 
+    // Honest reporting: when NONE of the meaningful inputs are present (no
+    // session log, no bridge, no usable <script> content), the check scanned
+    // nothing — report a skipped marker so the report distinguishes "ran
+    // clean" from "had nothing to scan" (mirrors a11y-axe's no-input path).
+    const noInputs =
+      opts.sessionLogPath === undefined &&
+      opts.bridgeUrl === undefined &&
+      (opts.cssOrHtml === undefined || !/<script\b/i.test(opts.cssOrHtml));
+    if (noInputs && aggregate.length === 0) {
+      return {
+        name: "console-scan",
+        severity: "pass",
+        durationMs: Date.now() - startedAt,
+        skipped: {
+          reason: "error",
+          detail: "no session log, bridge, or <script> content to scan",
+        },
+      };
+    }
+
     const severity =
       aggregate.some((c) => SEVERE_RE.test(c.message))
         ? "fail"

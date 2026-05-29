@@ -326,7 +326,8 @@ export type GetStatusResponse = BridgeStatus;
 export interface GetLiveJsRequest {
   readonly _kind: "GET-live-js";
   // No auth: must be loadable directly by the dev page <script> tag.
-  // CSP-bypass concerns are handled by csp.ts, not by token gating here.
+  // CSP concerns are out of scope for /live.js; csp.ts is an opt-in dev-mode
+  // CSP patch helper (not auto-wired), separate from token gating.
 }
 export type GetLiveJsResponse = string; // raw JS body, served as text/javascript
 
