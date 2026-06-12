@@ -2,7 +2,7 @@
 
 // src/agent/init.ts
 import { mkdir, stat, writeFile } from "fs/promises";
-import { dirname, resolve as resolve3 } from "path";
+import { dirname as dirname3, resolve as resolve4 } from "path";
 
 // src/contracts/init.ts
 import { z } from "zod";
@@ -486,8 +486,8 @@ async function detect(opts) {
     const content = await readFileSafely(filePath);
     if (content === null) continue;
     const { perLib, signals: fileSignals } = scoreFileContent(filePath, content);
-    for (const fs2 of fileSignals) {
-      if (signals.length < MAX_VISIBLE_SIGNALS) signals.push(fs2);
+    for (const fs22 of fileSignals) {
+      if (signals.length < MAX_VISIBLE_SIGNALS) signals.push(fs22);
     }
     for (const [lib, weight] of perLib.entries()) {
       sumPerLib.set(lib, (sumPerLib.get(lib) ?? 0) + weight);
@@ -541,119 +541,393 @@ function buildFallbackChain(primaryLib, preferred) {
   return chain;
 }
 
+// src/session/logger.ts
+import { promises as fs3 } from "fs";
+import { dirname as dirname2, join as join3 } from "path";
+
+// src/source/undo-stack.ts
+import { promises as fs2 } from "fs";
+import { dirname, isAbsolute, join as join2, resolve as resolve2, sep as sep2 } from "path";
+
+// src/contracts/source.ts
+import { z as z3 } from "zod";
+var SourceFileTypeSchema = z3.enum([
+  "tsx",
+  "jsx",
+  "html",
+  "vue",
+  "svelte",
+  "css"
+]);
+var MarkerKindSchema = z3.enum([
+  "inject-start",
+  "inject-end",
+  "variants-start",
+  "variants-end",
+  "style-start",
+  "style-end"
+]);
+var MarkerGroupSchema = z3.enum(["inject", "variants", "style"]);
+var InjectMarkerSchema = z3.object({
+  injectId: z3.string().min(1),
+  // ULID or UUID
+  insertedAt: z3.string(),
+  // ISO timestamp
+  bridgeUrl: z3.string().url(),
+  token: z3.string().uuid(),
+  // SHA256 hex of the original first 256 bytes of the file (before inject).
+  // `removeLiveScript` recomputes the hash AFTER stripping the inject and
+  // refuses if it doesn't match — protects against partial edits.
+  beforeHash: z3.string().regex(/^[0-9a-f]{64}$/i),
+  scriptSrc: z3.string().url().optional(),
+  inline: z3.boolean().default(false)
+});
+var VariantBlockMarkerSchema = z3.object({
+  sessionId: z3.string().min(1),
+  targetId: z3.string().min(1),
+  wrappedAt: z3.string(),
+  // ISO
+  variantCount: z3.number().int().min(1).max(8),
+  originalLines: z3.string()
+  // base64 of the wrapped original snippet
+});
+var StyleBlockMarkerSchema = z3.object({
+  sessionId: z3.string().min(1),
+  targetId: z3.string().min(1),
+  // `@scope` selector base (without the `[data-wisp-variant="N"]` index).
+  // Lets carbonize rewrite scope rules into permanent selectors targeting
+  // the accepted variant's host.
+  scopeBase: z3.string().min(1)
+});
+var MarkerBlockSchema = z3.object({
+  startLine: z3.number().int().min(0),
+  endLine: z3.number().int().min(0),
+  startOffset: z3.number().int().min(0),
+  endOffset: z3.number().int().min(0),
+  group: MarkerGroupSchema,
+  // Parsed `k=v` pairs from the OPEN marker. Decoded via `decodeURIComponent`.
+  payload: z3.record(z3.string(), z3.string())
+});
+var InjectOptionsSchema = z3.object({
+  bridgeUrl: z3.string().url(),
+  token: z3.string().uuid(),
+  // If true, the marker payload sets `inline=true` and the injected element
+  // is `<script>…inline body…</script>`; otherwise it's
+  // `<script src="${bridgeUrl}/live.js?token=${token}">`. Inline form is used
+  // by tests; production always uses the src form.
+  inline: z3.boolean().default(false),
+  // Where to splice the script tag. JSX/TSX: just inside `<head>` if present,
+  // else at top of the file's first top-level JSX expression. HTML/Vue/Svelte:
+  // before `</head>`. CSS: rejected by safetyCheck — CSS cannot host a script.
+  preferredAnchor: z3.enum(["before-head-close", "after-head-open", "auto"]).default("auto"),
+  // Optional caller-supplied injectId; useful for tests that need determinism.
+  injectId: z3.string().min(1).optional()
+});
+var AcceptOperationSchema = z3.object({
+  filePath: z3.string().min(1),
+  sessionId: z3.string().min(1),
+  targetId: z3.string().min(1),
+  variantId: z3.string().min(1),
+  // The full variant CSS (the `@scope ([data-wisp-variant="N"]) { … }` body).
+  // The agent supplies this; the engine does not re-fetch it.
+  variantCss: z3.string(),
+  // CSS-var overrides accumulated from slider tuning. Keys must match the
+  // `--name` form; values are baked literal into the carbonized output.
+  paramOverrides: z3.record(z3.string(), z3.string()).default({}),
+  // If false: leave the `@scope` rule verbatim (debugging mode). Default true:
+  // rewrite the rule into permanent selectors targeting the chosen variant's
+  // host node.
+  carbonize: z3.boolean().default(true),
+  // Optional override of the auto-detected EOL convention. Default = detect.
+  eolConvention: z3.enum(["\n", "\r\n", "\r"]).optional()
+});
+var DiscardOperationSchema = z3.object({
+  filePath: z3.string().min(1),
+  sessionId: z3.string().min(1),
+  targetId: z3.string().min(1)
+});
+var SafetyErrorCodeSchema = z3.enum([
+  "PATH_OUTSIDE_ROOT",
+  "REFUSE_LIST_MATCH",
+  // dist/, .next/, node_modules/, etc.
+  "GENERATED_MAGIC_COMMENT",
+  // `@generated` in first 200 bytes
+  "BINARY_FILE",
+  // not utf-8 decodable
+  "FILE_TOO_LARGE",
+  // > MAX_SOURCE_FILE_BYTES
+  "UNSUPPORTED_FILE_TYPE",
+  // extension not in SUPPORTED_EXTENSIONS
+  "READ_ONLY_FILE",
+  // fs.access W_OK rejected
+  "SYMLINK_ESCAPE"
+  // realpath resolves outside projectRoot
+]);
+var UndoEntryKindSchema = z3.enum([
+  "inject-script",
+  "remove-script",
+  "wrap-variants",
+  "discard-variants",
+  "accept-variant",
+  "param-change",
+  "safety-refused"
+]);
+var UndoEntrySchema = z3.object({
+  ts: z3.string(),
+  // ISO timestamp
+  sessionId: z3.string().min(1),
+  kind: UndoEntryKindSchema,
+  filePath: z3.string().min(1),
+  detail: z3.record(z3.string(), z3.unknown()).optional(),
+  // Hex SHA256 of the file before / after the operation. `safety-refused`
+  // entries omit both. `param-change` omits `afterHash` (the param change is
+  // a runtime DOM update; no file mutation has happened yet).
+  beforeSha256: z3.string().regex(/^[0-9a-f]{64}$/i).optional(),
+  afterSha256: z3.string().regex(/^[0-9a-f]{64}$/i).optional()
+});
+
+// src/source/undo-stack.ts
+var DEFAULT_PROJECT_ROOT = process.cwd();
+
+// src/contracts/session.ts
+import { z as z4 } from "zod";
+var SessionEventKindSchema = z4.enum([
+  // Inherit Phase-3 file-op kinds verbatim.
+  ...UndoEntryKindSchema.options,
+  // Phase-6 session-level kinds.
+  "session-start",
+  "session-end",
+  "pick",
+  "configure",
+  "variants-emitted",
+  "cycle-active-changed",
+  "param-changed",
+  "annotation-added",
+  "verify-report",
+  "policy-proposal-shown",
+  "policy-proposal-accepted",
+  "policy-proposal-declined",
+  "morph-engaged",
+  "structure-variant-emitted",
+  "component-lib-detected"
+]);
+var SessionEventEntrySchema = z4.object({
+  ts: z4.string(),
+  // ISO timestamp
+  sessionId: z4.string().min(1),
+  kind: SessionEventKindSchema,
+  filePath: z4.string().optional(),
+  detail: z4.record(z4.string(), z4.unknown()).optional(),
+  beforeSha256: z4.string().regex(/^[0-9a-f]{64}$/i).optional(),
+  afterSha256: z4.string().regex(/^[0-9a-f]{64}$/i).optional()
+});
+var PolicyAxisSchema = z4.enum([
+  "hierarchy",
+  "layout",
+  "typography",
+  "color",
+  "density"
+]);
+var PolicyProposalSchema = z4.object({
+  axis: PolicyAxisSchema,
+  observation: z4.string().min(1),
+  // human-readable: "3 high-density variants accepted in a row"
+  proposed: z4.string().min(1),
+  // proposed change: "add density: 'generous' to .wisp/policy.md"
+  evidence: z4.array(
+    z4.object({
+      ts: z4.string(),
+      variantId: z4.string().min(1),
+      primaryAxis: PolicyAxisSchema
+    })
+  ),
+  triggerThreshold: z4.number().int().min(2).default(3)
+});
+var PolicyDocumentSchema = z4.object({
+  axes: z4.record(PolicyAxisSchema, z4.string().min(1)).default({}),
+  acceptedAt: z4.string(),
+  source: z4.enum(["user-confirmed", "wisp-proposed-then-confirmed"])
+});
+var MORPH_T_MIN = 0;
+var MORPH_T_MAX = 1;
+var MorphVariableDiffSchema = z4.object({
+  name: z4.string().regex(/^--[a-z][a-z0-9-]*$/i, "must be a CSS custom property"),
+  valueA: z4.string(),
+  valueB: z4.string(),
+  interpolatable: z4.boolean(),
+  unit: z4.string().optional()
+});
+var MorphSourceSchema = z4.object({
+  variantIdA: z4.string().min(1),
+  variantIdB: z4.string().min(1),
+  // Auto-extracted diff of CSS-vars between A and B.
+  variableDiff: z4.array(MorphVariableDiffSchema)
+});
+var MorphConfigSchema = z4.object({
+  source: MorphSourceSchema,
+  t: z4.number().min(MORPH_T_MIN).max(MORPH_T_MAX),
+  interpolatedCss: z4.string()
+});
+var StructureVariantKindSchema = z4.enum([
+  "as-is",
+  // baseline = original JSX (always present so the user can revert without re-pick)
+  "two-col-split",
+  // 2-column layout
+  "card-layout",
+  // wrap children in card components
+  "stacked-vertical",
+  // simple vertical stack
+  "horizontal-row",
+  // row layout
+  "hero-style",
+  // hero treatment (large primary)
+  "sidebar-left",
+  "sidebar-right"
+]);
+var STRUCTURE_VARIANT_RATIONALE_MAX_LEN = 180;
+var StructureVariantSpecSchema = z4.object({
+  kind: StructureVariantKindSchema,
+  rationale: z4.string().min(1).max(STRUCTURE_VARIANT_RATIONALE_MAX_LEN),
+  // Full JSX subtree as a STRING — agent-emitted. Lives in a markdown-fenced
+  // block during transport; the source-edit layer parses it as the raw
+  // replacement payload.
+  jsx: z4.string().min(1),
+  // CSS to inject alongside (optional — purely structural variants may have
+  // no CSS; tied to the JSX via the structure-variant-emitted log entry).
+  css: z4.string().default("")
+});
+
+// src/session/logger.ts
+var gitignoreEnsuredFor = null;
+async function ensureWispGitignored(projectRoot) {
+  if (gitignoreEnsuredFor === projectRoot) return;
+  gitignoreEnsuredFor = projectRoot;
+  const giPath = join3(projectRoot, ".gitignore");
+  try {
+    const text = await fs3.readFile(giPath, "utf8").catch(() => "");
+    const covered = text.split(/\r?\n/).map((l) => l.trim()).some((l) => l === ".wisp" || l === ".wisp/" || l === "/.wisp" || l === "/.wisp/");
+    if (covered) return;
+    const nl = text.length === 0 || text.endsWith("\n") ? "" : "\n";
+    await fs3.appendFile(giPath, `${nl}# wisp-design session logs (auto-added \u2014 prevents dev-server reload loops)
+.wisp
+`, "utf8");
+  } catch {
+  }
+}
+
 // src/agent/_helpers.ts
 import { readFile } from "fs/promises";
-import { resolve as resolve2 } from "path";
+import { resolve as resolve3 } from "path";
 
 // src/contracts/bridge.ts
-import { z as z3 } from "zod";
-var PortLockSchema = z3.object({
-  port: z3.number().int().min(31337).max(31400),
-  token: z3.string().uuid(),
-  pid: z3.number().int().positive(),
-  startedAt: z3.string().datetime(),
-  projectRoot: z3.string().min(1)
+import { z as z5 } from "zod";
+var PortLockSchema = z5.object({
+  port: z5.number().int().min(31337).max(31400),
+  token: z5.string().uuid(),
+  pid: z5.number().int().positive(),
+  startedAt: z5.string().datetime(),
+  projectRoot: z5.string().min(1)
 });
-var ElementRectSchema = z3.object({
-  x: z3.number(),
-  y: z3.number(),
-  w: z3.number().nonnegative(),
-  h: z3.number().nonnegative()
+var ElementRectSchema = z5.object({
+  x: z5.number(),
+  y: z5.number(),
+  w: z5.number().nonnegative(),
+  h: z5.number().nonnegative()
 });
-var ElementTargetSchema = z3.object({
-  selector: z3.string().min(1),
+var ElementTargetSchema = z5.object({
+  selector: z5.string().min(1),
   rect: ElementRectSchema,
-  tag: z3.string().min(1)
+  tag: z5.string().min(1)
 });
-var sessionId = z3.string().min(1);
-var AnnotationKindSchema = z3.enum([
+var sessionId = z5.string().min(1);
+var AnnotationKindSchema = z5.enum([
   "padding",
   "color",
   "size",
   "content",
   "other"
 ]);
-var StructuredAnnotationSchema = z3.object({
+var StructuredAnnotationSchema = z5.object({
   kind: AnnotationKindSchema,
-  note: z3.string().min(1).max(2e3)
+  note: z5.string().min(1).max(2e3)
 });
-var VariantSchema = z3.object({
-  id: z3.string().min(1),
-  css: z3.string(),
-  rationale: z3.string().min(1).max(280)
+var VariantSchema = z5.object({
+  id: z5.string().min(1),
+  css: z5.string(),
+  rationale: z5.string().min(1).max(280)
 });
-var PickEventSchema = z3.object({
-  kind: z3.literal("pick"),
+var PickEventSchema = z5.object({
+  kind: z5.literal("pick"),
   target: ElementTargetSchema,
   sessionId
 });
-var ConfigureEventSchema = z3.object({
-  kind: z3.literal("configure"),
+var ConfigureEventSchema = z5.object({
+  kind: z5.literal("configure"),
   target: ElementTargetSchema,
-  freeText: z3.string().min(1).max(4e3),
+  freeText: z5.string().min(1).max(4e3),
   sessionId
 });
-var GeneratingEventSchema = z3.object({
-  kind: z3.literal("generating"),
+var GeneratingEventSchema = z5.object({
+  kind: z5.literal("generating"),
   target: ElementTargetSchema,
-  freeText: z3.string().min(1).max(4e3),
-  variantCount: z3.number().int().min(1).max(8),
+  freeText: z5.string().min(1).max(4e3),
+  variantCount: z5.number().int().min(1).max(8),
   // Phase 7.15 — deviation tells the agent how far variants should drift
   // from the original design. 1 = subtle (typography weight, light spacing
   // tweaks), 3 = balanced (mix of axes, the previous default behavior),
   // 5 = radical (reimagined layout/structure/color, may break conventions).
   // Optional so older clients / scripted POSTs keep working at the default.
-  deviation: z3.number().int().min(1).max(5).optional(),
+  deviation: z5.number().int().min(1).max(5).optional(),
   sessionId
 });
-var CyclingEventSchema = z3.object({
-  kind: z3.literal("cycling"),
+var CyclingEventSchema = z5.object({
+  kind: z5.literal("cycling"),
   target: ElementTargetSchema,
-  variants: z3.array(VariantSchema).min(1).max(8),
-  activeIndex: z3.number().int().nonnegative(),
+  variants: z5.array(VariantSchema).min(1).max(8),
+  activeIndex: z5.number().int().nonnegative(),
   sessionId
 });
-var ParameterChangeEventSchema = z3.object({
-  kind: z3.literal("parameter-change"),
+var ParameterChangeEventSchema = z5.object({
+  kind: z5.literal("parameter-change"),
   target: ElementTargetSchema,
-  varName: z3.string().min(1),
-  value: z3.string(),
+  varName: z5.string().min(1),
+  value: z5.string(),
   sessionId
 });
-var AcceptEventSchema = z3.object({
-  kind: z3.literal("accept"),
+var AcceptEventSchema = z5.object({
+  kind: z5.literal("accept"),
   target: ElementTargetSchema,
-  variantId: z3.string().min(1),
+  variantId: z5.string().min(1),
   sessionId,
   // Phase 7.8 — Browser includes the accepted variant's CSS so the in-process
   // accept handler can splice it into source without regenerating from a stub.
   // Optional for back-compat: older browsers / tests omit this and the handler
   // falls back to stub regeneration.
-  variantCss: z3.string().optional(),
-  rationale: z3.string().optional()
+  variantCss: z5.string().optional(),
+  rationale: z5.string().optional()
 });
-var DiscardEventSchema = z3.object({
-  kind: z3.literal("discard"),
+var DiscardEventSchema = z5.object({
+  kind: z5.literal("discard"),
   target: ElementTargetSchema,
   sessionId
 });
-var AnnotationEventSchema = z3.object({
-  kind: z3.literal("annotation"),
+var AnnotationEventSchema = z5.object({
+  kind: z5.literal("annotation"),
   target: ElementTargetSchema,
   annotation: StructuredAnnotationSchema,
   sessionId
 });
-var ErrorEventSchema = z3.object({
-  kind: z3.literal("error"),
-  message: z3.string().min(1),
-  code: z3.string().optional(),
+var ErrorEventSchema = z5.object({
+  kind: z5.literal("error"),
+  message: z5.string().min(1),
+  code: z5.string().optional(),
   sessionId: sessionId.optional()
 });
-var HeartbeatEventSchema = z3.object({
-  kind: z3.literal("heartbeat"),
-  at: z3.string().datetime()
+var HeartbeatEventSchema = z5.object({
+  kind: z5.literal("heartbeat"),
+  at: z5.string().datetime()
 });
-var BridgeEventSchema = z3.discriminatedUnion("kind", [
+var BridgeEventSchema = z5.discriminatedUnion("kind", [
   PickEventSchema,
   ConfigureEventSchema,
   GeneratingEventSchema,
@@ -667,11 +941,11 @@ var BridgeEventSchema = z3.discriminatedUnion("kind", [
 ]);
 var LONG_POLL_CAP_MS = 27e4;
 var LONG_POLL_MIN_TIMEOUT_MS = 1e3;
-var LongPollRequestSchema = z3.object({
-  token: z3.string().uuid(),
-  timeout: z3.number().int().min(LONG_POLL_MIN_TIMEOUT_MS).optional(),
-  leaseMs: z3.number().int().min(1e3).optional(),
-  cursor: z3.string().optional()
+var LongPollRequestSchema = z5.object({
+  token: z5.string().uuid(),
+  timeout: z5.number().int().min(LONG_POLL_MIN_TIMEOUT_MS).optional(),
+  leaseMs: z5.number().int().min(1e3).optional(),
+  cursor: z5.string().optional()
 }).refine(
   (v) => v.timeout === void 0 || v.timeout <= LONG_POLL_CAP_MS,
   {
@@ -679,32 +953,32 @@ var LongPollRequestSchema = z3.object({
     path: ["timeout"]
   }
 );
-var LongPollResponseSchema = z3.object({
-  events: z3.array(BridgeEventSchema),
-  cursor: z3.string(),
+var LongPollResponseSchema = z5.object({
+  events: z5.array(BridgeEventSchema),
+  cursor: z5.string(),
   // Server-wall-clock at which it sliced the response. Lets the agent measure
   // drift against its own local clock when budgeting the next slice.
-  slicedAt: z3.number().int().nonnegative()
+  slicedAt: z5.number().int().nonnegative()
 });
-var BridgeHttpErrorSchema = z3.object({
-  error: z3.object({
-    code: z3.string().min(1),
-    message: z3.string().min(1),
-    detail: z3.unknown().optional()
+var BridgeHttpErrorSchema = z5.object({
+  error: z5.object({
+    code: z5.string().min(1),
+    message: z5.string().min(1),
+    detail: z5.unknown().optional()
   })
 });
-var BridgeStatusSchema = z3.object({
-  port: z3.number().int().positive(),
-  startedAt: z3.string().datetime(),
-  uptimeMs: z3.number().int().nonnegative(),
-  sessionId: z3.string().min(1),
-  pendingEvents: z3.number().int().nonnegative(),
-  connectedSseClients: z3.number().int().nonnegative(),
-  projectRoot: z3.string().min(1)
+var BridgeStatusSchema = z5.object({
+  port: z5.number().int().positive(),
+  startedAt: z5.string().datetime(),
+  uptimeMs: z5.number().int().nonnegative(),
+  sessionId: z5.string().min(1),
+  pendingEvents: z5.number().int().nonnegative(),
+  connectedSseClients: z5.number().int().nonnegative(),
+  projectRoot: z5.string().min(1)
 });
-var BridgeHealthSchema = z3.object({
-  ok: z3.literal(true),
-  version: z3.string().min(1)
+var BridgeHealthSchema = z5.object({
+  ok: z5.literal(true),
+  version: z5.string().min(1)
 });
 
 // src/agent/_helpers.ts
@@ -786,7 +1060,7 @@ function mapFlags(args) {
   return { ok: true, flags: checked.data };
 }
 async function brandSpecExists(projectRoot) {
-  const path = resolve3(projectRoot, ".wisp/brand-spec.json");
+  const path = resolve4(projectRoot, ".wisp/brand-spec.json");
   try {
     const s = await stat(path);
     if (s.isFile()) return path;
@@ -888,14 +1162,14 @@ Q4 Capacity \u2014 What is the user's mental state when they land?
 }
 async function writeBrandSpec(projectRoot, spec) {
   const validated = BrandSpecSchema.parse(spec);
-  const path = resolve3(projectRoot, ".wisp/brand-spec.json");
-  await mkdir(dirname(path), { recursive: true });
+  const path = resolve4(projectRoot, ".wisp/brand-spec.json");
+  await mkdir(dirname3(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(validated, null, 2)}
 `, { encoding: "utf8" });
   return path;
 }
 async function writePolicySkeleton(projectRoot) {
-  const path = resolve3(projectRoot, ".wisp/policy.md");
+  const path = resolve4(projectRoot, ".wisp/policy.md");
   const body = `---
 axes: {}
 ---
@@ -906,13 +1180,14 @@ Decisions accumulated during live-mode sessions; edit to lock a preference.
 Axis values are appended by \`wisp-design policy --apply\` after
 the agent observes 3 consecutive decisions on the same axis.
 `;
-  await mkdir(dirname(path), { recursive: true });
+  await mkdir(dirname3(path), { recursive: true });
   await writeFile(path, body, { encoding: "utf8" });
   return path;
 }
 async function ensureSessionsDir(projectRoot) {
-  const path = resolve3(projectRoot, ".wisp/sessions");
+  const path = resolve4(projectRoot, ".wisp/sessions");
   await mkdir(path, { recursive: true });
+  await ensureWispGitignored(projectRoot);
   return path;
 }
 async function runInit(args) {

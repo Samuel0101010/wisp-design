@@ -2,7 +2,7 @@
 
 // src/session/logger.ts
 import { promises as fs2 } from "fs";
-import { dirname as dirname2 } from "path";
+import { dirname as dirname2, join as join2 } from "path";
 
 // src/source/undo-stack.ts
 import { promises as fs } from "fs";
@@ -303,8 +303,28 @@ var StructureVariantSpecSchema = z2.object({
 });
 
 // src/session/logger.ts
+var gitignoreEnsuredFor = null;
+async function ensureWispGitignored(projectRoot) {
+  if (gitignoreEnsuredFor === projectRoot) return;
+  gitignoreEnsuredFor = projectRoot;
+  const giPath = join2(projectRoot, ".gitignore");
+  try {
+    const text = await fs2.readFile(giPath, "utf8").catch(() => "");
+    const covered = text.split(/\r?\n/).map((l) => l.trim()).some((l) => l === ".wisp" || l === ".wisp/" || l === "/.wisp" || l === "/.wisp/");
+    if (covered) return;
+    const nl = text.length === 0 || text.endsWith("\n") ? "" : "\n";
+    await fs2.appendFile(giPath, `${nl}# wisp-design session logs (auto-added \u2014 prevents dev-server reload loops)
+.wisp
+`, "utf8");
+  } catch {
+  }
+}
+function resetGitignoreGuardForTest() {
+  gitignoreEnsuredFor = null;
+}
 async function appendEntry(entry, projectRoot) {
   const parsed = SessionEventEntrySchema.parse(entry);
+  await ensureWispGitignored(projectRoot);
   if (isUndoKind(parsed.kind)) {
     if (parsed.filePath === void 0) {
       throw new Error(
@@ -577,6 +597,8 @@ var sessionLogger = {
 };
 export {
   appendEntry as _appendEntryForTest,
+  ensureWispGitignored,
+  resetGitignoreGuardForTest,
   sessionLogger
 };
 //# sourceMappingURL=logger.js.map

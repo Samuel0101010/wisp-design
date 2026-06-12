@@ -690,12 +690,33 @@ var init_session = __esm({
 var logger_exports = {};
 __export(logger_exports, {
   _appendEntryForTest: () => appendEntry,
+  ensureWispGitignored: () => ensureWispGitignored,
+  resetGitignoreGuardForTest: () => resetGitignoreGuardForTest,
   sessionLogger: () => sessionLogger
 });
 import { promises as fs2 } from "fs";
-import { dirname as dirname3 } from "path";
+import { dirname as dirname3, join as join2 } from "path";
+async function ensureWispGitignored(projectRoot) {
+  if (gitignoreEnsuredFor === projectRoot) return;
+  gitignoreEnsuredFor = projectRoot;
+  const giPath = join2(projectRoot, ".gitignore");
+  try {
+    const text = await fs2.readFile(giPath, "utf8").catch(() => "");
+    const covered = text.split(/\r?\n/).map((l) => l.trim()).some((l) => l === ".wisp" || l === ".wisp/" || l === "/.wisp" || l === "/.wisp/");
+    if (covered) return;
+    const nl = text.length === 0 || text.endsWith("\n") ? "" : "\n";
+    await fs2.appendFile(giPath, `${nl}# wisp-design session logs (auto-added \u2014 prevents dev-server reload loops)
+.wisp
+`, "utf8");
+  } catch {
+  }
+}
+function resetGitignoreGuardForTest() {
+  gitignoreEnsuredFor = null;
+}
 async function appendEntry(entry, projectRoot) {
   const parsed = SessionEventEntrySchema.parse(entry);
+  await ensureWispGitignored(projectRoot);
   if (isUndoKind(parsed.kind)) {
     if (parsed.filePath === void 0) {
       throw new Error(
@@ -929,13 +950,14 @@ async function logComponentLibDetected(sessionId2, evt, opts) {
     opts.projectRoot
   );
 }
-var UNDO_KINDS, sessionLogger;
+var gitignoreEnsuredFor, UNDO_KINDS, sessionLogger;
 var init_logger = __esm({
   "src/session/logger.ts"() {
     "use strict";
     init_undo_stack();
     init_session();
     init_undo_stack();
+    gitignoreEnsuredFor = null;
     UNDO_KINDS = /* @__PURE__ */ new Set([
       "inject-script",
       "remove-script",
@@ -3139,11 +3161,11 @@ __export(claude_invoke_exports, {
 import { execFile } from "child_process";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 import { promisify } from "util";
 function getNeutralCwd() {
   if (neutralCwd === null) {
-    neutralCwd = mkdtempSync(join2(tmpdir(), "wisp-claude-cwd-"));
+    neutralCwd = mkdtempSync(join3(tmpdir(), "wisp-claude-cwd-"));
   }
   return neutralCwd;
 }
@@ -3581,7 +3603,7 @@ __export(anti_slop_linter_exports, {
   runAntiSlopOnFiles: () => runAntiSlopOnFiles
 });
 import { promises as fs6 } from "fs";
-import { extname as extname3, join as join3 } from "path";
+import { extname as extname3, join as join4 } from "path";
 function extractClassNameValues(content) {
   const results = [];
   CLASS_ATTR_RE.lastIndex = 0;
@@ -4004,7 +4026,7 @@ function extractCssFromFile(filePath, content) {
 async function loadBrandColors(projectRoot) {
   const out = /* @__PURE__ */ new Set();
   try {
-    const path = join3(projectRoot, ".wisp", "brand-spec.json");
+    const path = join4(projectRoot, ".wisp", "brand-spec.json");
     const raw = await fs6.readFile(path, "utf8");
     const json = JSON.parse(raw);
     let arr = void 0;
@@ -5192,7 +5214,7 @@ __export(multi_viewport_exports, {
   runMultiViewport: () => runMultiViewport
 });
 import { promises as fs8 } from "fs";
-import { dirname as dirname4, join as join4, resolve as resolve7 } from "path";
+import { dirname as dirname4, join as join5, resolve as resolve7 } from "path";
 async function loadPlaywright2() {
   try {
     const m = await import("playwright");
@@ -5313,7 +5335,7 @@ async function runMultiViewport(opts) {
         for (const scheme of DEFAULT_COLOR_SCHEMES) {
           if (Date.now() - budgetBase > MULTI_VIEWPORT_BUDGET_MS - 400) break;
           await page.emulateMedia({ colorScheme: scheme });
-          const outPath = join4(dest, `${vp.label}.${scheme}.png`);
+          const outPath = join5(dest, `${vp.label}.${scheme}.png`);
           await fs8.mkdir(dirname4(outPath), { recursive: true });
           await page.screenshot({ path: outPath, fullPage: false });
           screenshots.push({

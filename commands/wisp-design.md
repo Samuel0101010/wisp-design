@@ -77,7 +77,7 @@ Du bekommst eine Notification mit dem rohen `data: {...}` Line. Parse das JSON, 
 
 Generiere **`variantCount` DISTINCTE Varianten** (Default 3):
 - Jede auf einer anderen primären Design-Achse: **hierarchy / layout / typography / color / density**. Drei Varianten derselben Achse = SLOP, verboten.
-- Jede Variant: `:scope, :scope * { … !important; }` damit Tailwind-Utilities geschlagen werden. Für struktur-Tags (ARTICLE, SECTION, DIV) zusätzlich `:scope > <child-selector>` für gezielte Kinder-Targeting.
+- **WICHTIG — Scope-Anatomie:** Der Scope-Root ist ein WRAPPER um den Klon des gepickten Elements (`variants-host > variant-host(scope-root) > klon`). Bare `:scope { display/flex/… }` stylt also den Wrapper, NICHT das Element! Das gepickte Element erreichst du mit `:scope > <tag>` (z. B. `:scope > div` bei einem DIV-Pick), dessen Kinder mit `:scope > <tag> > …`. Nur geerbte Properties (CSS-Vars, color, font-*) wirken auch über bare `:scope`. Immer `!important`, damit Tailwind-Utilities geschlagen werden.
 - Tunable Properties als CSS-Vars (`--wisp-pad`, `--wisp-weight`) mit `/* @param: kind=range min=0 max=24 step=2 label="padding" */`.
 - **Anti-Slop hard-bans** (nie generieren): purple-to-blue gradient, glassmorphism (backdrop-blur) ohne Begründung, hero-metric-template (98%/3.2x/24/7), gradient-text-headline, side-stripe (1-3px solid left border), default-tailwind-blue ohne brand-token, em-dash-UI.
 - Jede Variant: 1-Satz `rationale` ≤180 chars, axis-attributed.
@@ -89,15 +89,18 @@ Schreibe das Payload nach `.wisp/cycling-<timestamp>.json`:
 {
   "kind": "cycling",
   "target": <event.target>,
+  "targets": [<event.target>],
   "variants": [
     { "id": "v0", "css": "/* baseline */", "rationale": "Baseline." },
     { "id": "v1", "css": ":scope > h3 { font-weight: 700 !important; letter-spacing: -0.02em !important; }", "rationale": "Heavier headline + tighter tracking creates editorial hierarchy." },
-    { "id": "v2", "css": ":scope { padding: 2em !important; } :scope > * + * { margin-top: 0.75em !important; }", "rationale": "Generous density — air between lines makes the card feel premium." }
+    { "id": "v2", "css": ":scope > article { padding: 2em !important; } :scope > article > * + * { margin-top: 0.75em !important; }", "rationale": "Generous density — air between lines makes the card feel premium." }
   ],
   "activeIndex": 0,
   "sessionId": "<event.sessionId>"
 }
 ```
+
+**Pflichtfelder:** `targets` (Array!) ist das Feld, das der Browser-Renderer liest — `target` (Singular) zusätzlich für Daemon/Session-Log. `sessionId` = aus dem generating-Event. **Schnell antworten:** poste innerhalb weniger Sekunden — der Browser wartet im `generating`-State (Spinner); jede Minute Wartezeit ist tote UX. Bei neuen Varianten-Sets fürs SELBE Ziel: NEUE IDs vergeben (der Echo-Guard verwirft Sets mit identischen IDs).
 
 POST zurück via Helper:
 ```

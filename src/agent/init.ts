@@ -37,6 +37,7 @@ import {
   type InitCliFlags,
 } from "../contracts/init.js";
 import { detect as detectComponentLibrary } from "./component-detect.js";
+import { ensureWispGitignored } from "../session/logger.js";
 import {
   EXIT_ARG,
   EXIT_IO,
@@ -282,6 +283,10 @@ async function writePolicySkeleton(projectRoot: string): Promise<string> {
 async function ensureSessionsDir(projectRoot: string): Promise<string> {
   const path = resolve(projectRoot, ".wisp/sessions");
   await mkdir(path, { recursive: true });
+  // Reload-Guard: .wisp/ MUSS gitignored sein, sonst scannt Tailwind v4 die
+  // Session-Logs und der Host-Dev-Server reloadet bei jedem Log-Append
+  // (Details: src/session/logger.ts, Phase 7.16).
+  await ensureWispGitignored(projectRoot);
   return path;
 }
 

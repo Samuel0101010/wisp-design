@@ -18,7 +18,7 @@
 //   3. No retries, no buffering — `fs.appendFile` is the unit of durability.
 
 import { promises as fs } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import { append as undoAppend } from "../source/undo-stack.js";
 import {
@@ -32,6 +32,46 @@ import {
 import { sessionLogPathForTest as sessionLogPath } from "../source/undo-stack.js";
 
 // ---------------------------------------------------------------------------
+// Reload-Guard (Phase 7.16): `.wisp/` MUST be gitignored in the host project.
+// Tailwind v4's automatic content detection scans every non-gitignored file —
+// including our session JSONLs. Each log append then invalidates the host's
+// CSS module graph and Vite fires a FULL PAGE RELOAD ~60ms after every
+// Generate click, killing the browser's `generating` state before any
+// cycling event can arrive (root-caused 2026-06-12: marker probes + CDP
+// navigation initiator + mtime forensics). Appending `.wisp` to .gitignore
+// breaks that chain for Vite+Tailwind v4 and keeps session logs out of the
+// user's repo as a bonus. Best-effort and idempotent — a read-only FS must
+// never block logging. NOTE: a running dev server reads .gitignore at boot,
+// so the user may need one dev-server restart after the first append.
+// ---------------------------------------------------------------------------
+
+let gitignoreEnsuredFor: string | null = null;
+
+export async function ensureWispGitignored(projectRoot: string): Promise<void> {
+  if (gitignoreEnsuredFor === projectRoot) return;
+  gitignoreEnsuredFor = projectRoot;
+  const giPath = join(projectRoot, ".gitignore");
+  try {
+    const text = await fs.readFile(giPath, "utf8").catch(() => "");
+    const covered = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .some((l) => l === ".wisp" || l === ".wisp/" || l === "/.wisp" || l === "/.wisp/");
+    if (covered) return;
+    const nl = text.length === 0 || text.endsWith("\n") ? "" : "\n";
+    await fs.appendFile(giPath, `${nl}# wisp-design session logs (auto-added — prevents dev-server reload loops)\n.wisp\n`, "utf8");
+  } catch {
+    /* best-effort */
+  }
+}
+
+// Test-only: reset the per-process memo so unit tests can exercise the guard
+// against multiple temp projectRoots within one process.
+export function resetGitignoreGuardForTest(): void {
+  gitignoreEnsuredFor = null;
+}
+
+// ---------------------------------------------------------------------------
 // Core append — schema-validate, then delegate to undo-stack so all writes
 // to `<sessionId>.jsonl` go through one code path (atomic O_APPEND, rotation).
 // ---------------------------------------------------------------------------
@@ -41,6 +81,8 @@ async function appendEntry(
   projectRoot: string,
 ): Promise<void> {
   const parsed = SessionEventEntrySchema.parse(entry);
+  // Reload-Guard BEFORE the first byte lands in .wisp/ (see header above).
+  await ensureWispGitignored(projectRoot);
   // undo-stack's `append` accepts UndoEntry; the SessionEventEntry schema is
   // a SUPER-set (it inherits UndoEntryKindSchema.options). The undo-stack
   // validator re-parses against UndoEntrySchema, which only knows Phase-3
