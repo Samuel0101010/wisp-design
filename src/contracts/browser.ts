@@ -33,12 +33,16 @@ export const WISP_VARIANT_DATA_ATTRIBUTE = "data-wisp-variant";
 export const WISP_CSS_DATA_ATTRIBUTE = "data-wisp-css";
 export const WISP_SESSION_DATA_ATTRIBUTE = "data-wisp-session";
 
-export const LIVE_JS_VERSION_TAG = "0.11.0-prerelease";
+export const LIVE_JS_VERSION_TAG = "0.11.2-prerelease";
 
 // Bridge enforces 4000 chars on `ConfigureEventSchema`. Mirrored here so the
 // floating bar can show a counter without round-tripping.
 export const FREE_TEXT_MAX_LEN = 4000;
 export const ANNOTATION_NOTE_MAX_LEN = 2000;
+// Phase 7.17 — pasted design-reference code (snippet popup). Much larger than
+// freeText because real component sources run long; bounded so a stray paste
+// of a whole bundle can't blow up the bridge payload / session log.
+export const CODE_SNIPPET_MAX_LEN = 20000;
 
 // --- Element targeting ---
 // Browser-side analogue of bridge `ElementTarget`, enriched with `id`,
@@ -169,6 +173,9 @@ export type BrowserState =
       kind: "generating";
       targets: PickResult[];
       freeText: string;
+      /** Phase 7.17 — pasted design-reference code from the snippet popup.
+       *  May carry the whole intent (freeText empty) or complement it. */
+      codeSnippet?: string;
       requestedVariantCount: number;
       /** Phase 7.15 — Deviation (1=subtle, 5=bold). Optional/back-compat. */
       deviation?: number;
@@ -222,7 +229,7 @@ export const STATE_TRANSITIONS: readonly StateTransition[] = [
   { from: "generating", to: "cycling", event: "generate-variants-arrived" },
   { from: "generating", to: "configuring", event: "generate-error" },
   { from: "generating", to: "configuring", event: "generate-cancel" },
-  // Phase 7.8 — late-arriving real-agent variants replace the placeholder.
+  // Phase 7.8 — the agent may push a replacement set while one is displayed.
   { from: "cycling", to: "cycling", event: "generate-variants-arrived" },
   { from: "cycling", to: "cycling", event: "cycle-next" },
   { from: "cycling", to: "cycling", event: "cycle-prev" },

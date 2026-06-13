@@ -177,6 +177,13 @@ function buildVariantPrompt(req) {
     DIV: "density, layout, hierarchy, shadow"
   };
   const tagHint = tagHints[req.target.tag.toUpperCase()] ?? "any primary axis";
+  const snippetBlock = req.codeSnippet !== void 0 && req.codeSnippet.length > 0 ? [
+    `DESIGN REFERENCE CODE (user-pasted, any framework \u2014 reproduce the LOOK via CSS variants, do not echo the code):`,
+    "```",
+    req.codeSnippet.slice(0, 2e4),
+    "```",
+    ``
+  ] : [];
   return [
     `You are designing CSS variants for the wisp-design live overlay.`,
     `Respond with ONLY raw JSON (no markdown fences, no preamble, no postscript).`,
@@ -188,6 +195,7 @@ function buildVariantPrompt(req) {
     `- Variants requested: ${variantCount}`,
     `- Suggested axes for this tag: ${tagHint}`,
     ``,
+    ...snippetBlock,
     `STRICT RULES:`,
     `1. Variant 0 MUST be identity baseline: css="/* baseline */", rationale="Baseline \u2014 original.".`,
     `2. The remaining ${remaining} variants each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP \u2014 do not do it.`,

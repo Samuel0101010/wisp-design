@@ -61,6 +61,10 @@ describe("constants ↔ contracts equivalence", () => {
     expect(constants.ANNOTATION_NOTE_MAX_LEN).toBe(contracts.ANNOTATION_NOTE_MAX_LEN);
   });
 
+  it("CODE_SNIPPET_MAX_LEN matches", () => {
+    expect(constants.CODE_SNIPPET_MAX_LEN).toBe(contracts.CODE_SNIPPET_MAX_LEN);
+  });
+
   it("STATE_TRANSITIONS arrays are deep-equal (same length & entries in order)", () => {
     expect(constants.STATE_TRANSITIONS).toHaveLength(contracts.STATE_TRANSITIONS.length);
     expect(constants.STATE_TRANSITIONS).toEqual(contracts.STATE_TRANSITIONS);

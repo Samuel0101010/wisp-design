@@ -286,7 +286,15 @@ export async function dispatchEvent(
 
       // Log the configure event — happens in all modes so session-replay
       // captures the user's intent and the active session timeline.
-      await sessionLogger.logConfigure(state.sessionId, { targetId, freeText: ev.freeText }, logOpts);
+      await sessionLogger.logConfigure(
+        state.sessionId,
+        {
+          targetId,
+          freeText: ev.freeText,
+          ...(ev.codeSnippet !== undefined ? { codeSnippet: ev.codeSnippet } : {}),
+        },
+        logOpts,
+      );
 
       // Cache the freeText+tag context so the later accept-with-stub-fallback
       // path (when variantCss is missing from the event) can still recover.
@@ -336,8 +344,12 @@ export async function dispatchEvent(
         // arrive, no [loading…] placeholder confusion.
         if (flags.externalAgent) {
           if (!flags.quiet) {
+            const snippetNote =
+              ev.codeSnippet !== undefined
+                ? ` codeSnippet=${ev.codeSnippet.length} chars`
+                : "";
             process.stdout.write(
-              `wisp-design live: external-agent — generating event waiting for active Claude session to design variants. freeText="${ev.freeText.slice(0, 60)}…"\n`,
+              `wisp-design live: external-agent — generating event waiting for active Claude session to design variants. freeText="${ev.freeText.slice(0, 60)}…"${snippetNote}\n`,
             );
           }
           break;
@@ -357,6 +369,7 @@ export async function dispatchEvent(
             {
               target: { selector: ev.target.selector, tag: ev.target.tag },
               freeText: ev.freeText,
+              ...(ev.codeSnippet !== undefined ? { codeSnippet: ev.codeSnippet } : {}),
               variantCount,
             },
             {},

@@ -7,10 +7,10 @@
 //                                ↔ parameter-sliders ↔ annotations
 //                                ↔ bridge-client (fetch + EventSource)
 //
-// PHASE-4 BOUNDARY: variants currently arrive from the bridge SSE stream as
-// `BridgeEventOf<"cycling">`. Until the agent is wired (Phase 4) the bridge
-// will not push any cycling events — so we fall back to a placeholder set
-// 1.5s after GENERATING. Tagged with `PHASE-4` for the agent author to find.
+// Variants arrive from the bridge SSE stream as `BridgeEventOf<"cycling">`.
+// Phase 7.17 — there is deliberately NO offline placeholder fallback: the
+// generating state (bar spinner + on-element shimmer) waits as long as the
+// designer needs. ESC / Cancel remain the user's exit.
 
 import { DEFAULT_VARIANT_COUNT, LIVE_JS_VERSION_TAG } from "./constants.js";
 import { readVariantCount } from "./persisted-settings.js";
@@ -58,10 +58,6 @@ import {
   renderVariantsMany,
   type ManyHandle,
 } from "./variant-render.js";
-import {
-  mountGeneratingOverlay,
-  type GeneratingOverlayHandle,
-} from "./generating-overlay.js";
 import { sanitizeModule } from "./sanitize.js";
 
 // ---------------------------------------------------------------------------
@@ -97,7 +93,7 @@ function toBridgeAnnotation(a: Annotation): StructuredAnnotation {
 // that carries a `/* @param: … */` directive. SSE-delivered variants arrive
 // with their tuning encoded only in the CSS text; lifting the declared values
 // into `cssVars` makes the morph slider (which diffs cssVars across variants)
-// usable for real agent variants — not just the local placeholder set.
+// usable for real agent variants.
 const PARAM_DECL_RE =
   /\/\*\s*@param:[^*]*\*\/\s*(--[A-Za-z][\w-]*)\s*:\s*([^;}]+)/g;
 function cssVarsFromCss(css: string): Record<string, string> {
@@ -136,39 +132,6 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
   let detachMultiSelect: (() => void) | null = null;
   let activeRender: ManyHandle | null = null;
   let detachSliders: (() => void) | null = null;
-  let placeholderTimer: number | null = null;
-  let generatingOverlay: GeneratingOverlayHandle | null = null;
-  let generatingOverlayMountedAt = 0;
-  let pendingOverlayUnmount: number | null = null;
-  // Minimum visible time so the animation actually registers — without
-  // this, an agent that responds in <100ms leaves the overlay invisible.
-  const MIN_OVERLAY_MS = 600;
-
-  const unmountGeneratingOverlay = (): void => {
-    if (generatingOverlay === null) return;
-    const elapsed = Date.now() - generatingOverlayMountedAt;
-    if (elapsed < MIN_OVERLAY_MS) {
-      // Defer the unmount so the animation has a visible "beat".
-      if (pendingOverlayUnmount !== null) {
-        window.clearTimeout(pendingOverlayUnmount);
-      }
-      const remaining = MIN_OVERLAY_MS - elapsed;
-      const captureHandle = generatingOverlay;
-      pendingOverlayUnmount = window.setTimeout(() => {
-        captureHandle.unmount();
-        if (generatingOverlay === captureHandle) generatingOverlay = null;
-        pendingOverlayUnmount = null;
-      }, remaining);
-      generatingOverlay = null;
-      return;
-    }
-    generatingOverlay.unmount();
-    generatingOverlay = null;
-    if (pendingOverlayUnmount !== null) {
-      window.clearTimeout(pendingOverlayUnmount);
-      pendingOverlayUnmount = null;
-    }
-  };
 
   // -------------------------------------------------------------------------
   // bar — instantiated once, mode-driven by state-machine snapshots.
@@ -223,14 +186,22 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
     onFreeTextChange: (text) => {
       machine.send("configure-edit-text", { freeText: text });
     },
-    onFreeTextSubmit: (text, count, deviation) => {
+    onFreeTextSubmit: (text, count, deviation, codeSnippet) => {
       machine.send("configure-edit-text", { freeText: text });
       // Phase 7.15 — thread the boldness/deviation slider value through
       // so the generating event payload below can carry it to the agent.
-      const submitPayload: { requestedVariantCount: number; deviation?: number } = {
+      // Phase 7.17 — ditto for the staged code snippet.
+      const submitPayload: {
+        requestedVariantCount: number;
+        deviation?: number;
+        codeSnippet?: string;
+      } = {
         requestedVariantCount: count,
       };
       if (typeof deviation === "number") submitPayload.deviation = deviation;
+      if (typeof codeSnippet === "string" && codeSnippet.length > 0) {
+        submitPayload.codeSnippet = codeSnippet;
+      }
       machine.send("configure-submit", submitPayload);
     },
     onConfigureCancel: () => machine.send("configure-cancel"),
@@ -502,9 +473,7 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         disarmPicker();
         disarmMultiSelect();
         tearDownRender();
-        unmountGeneratingOverlay();
         multi.clear();
-        clearPlaceholderTimer();
         lastConfiguringFingerprint = "";
         lastCyclingFingerprint = "";
         bar.setMode("idle", { targets: [], freeText: "", requestedVariantCount: readVariantCount(DEFAULT_VARIANT_COUNT) });
@@ -512,7 +481,6 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
       case "picking":
         disarmMultiSelect();
         tearDownRender();
-        unmountGeneratingOverlay();
         armPicker();
         lastConfiguringFingerprint = "";
         lastCyclingFingerprint = "";
@@ -522,7 +490,6 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
         disarmPicker();
         armMultiSelect();
         tearDownRender();
-        unmountGeneratingOverlay();
         lastCyclingFingerprint = "";
         const cfg: ConfigureCtx = {
           targets: st.targets,
@@ -551,20 +518,9 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
           requestedVariantCount: st.requestedVariantCount,
         };
         bar.setMode("generating", gen);
-        // Mount the animated generating-overlay above each picked target.
-        // Unmounts (with min-display debounce) when transitioning out.
-        // Cancel any pending unmount from a previous round.
-        if (pendingOverlayUnmount !== null) {
-          window.clearTimeout(pendingOverlayUnmount);
-          pendingOverlayUnmount = null;
-        }
-        if (generatingOverlay !== null) generatingOverlay.unmount();
-        generatingOverlay = mountGeneratingOverlay({
-          selectors: st.targets.map((t) => t.selector),
-          variantCount: st.requestedVariantCount,
-        });
-        generatingOverlayMountedAt = Date.now();
-        // Push the bridge event so the agent (Phase 4) can start working.
+        // The bar's generation-shimmer (mounted by renderGenerating) is the
+        // single on-element waiting cue — no second overlay, no fallback.
+        // Push the bridge event so the agent can start working.
         const target = st.targets[0];
         if (target) {
           const ev: BridgeEvent = {
@@ -576,17 +532,18 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
             // Phase 7.15 — pass deviation so the active Claude session
             // can scale variant aggressiveness (1 subtle .. 5 radical).
             ...(typeof st.deviation === "number" ? { deviation: st.deviation } : {}),
+            // Phase 7.17 — pass the pasted design-reference snippet.
+            ...(typeof st.codeSnippet === "string" && st.codeSnippet.length > 0
+              ? { codeSnippet: st.codeSnippet }
+              : {}),
           };
           void bridge.postEvent(ev).catch(() => undefined);
         }
-        schedulePlaceholderVariants(st.requestedVariantCount);
         break;
       }
       case "cycling": {
         disarmPicker();
         disarmMultiSelect();
-        clearPlaceholderTimer();
-        unmountGeneratingOverlay();
         lastConfiguringFingerprint = "";
 
         const fp = cyclingFingerprint(st.targets, st.variants);
@@ -644,48 +601,12 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
     }
   });
 
-  // Defensive fallback when the bridge doesn't deliver a `cycling` event
-  // within `PLACEHOLDER_TIMEOUT_MS`. The most common cause is the agent's
-  // live process not running (the user closed `wisp-design live`, lost the
-  // network connection to the bridge, or never started it). Surfacing this
-  // honestly in the rationale text helps integrators diagnose. CSS still
-  // includes the `--wisp-pad` slider so the parameter-binding flow stays
-  // demoable even when offline.
-  //
-  // Phase 7.10 — bumped from 30s → 300s (5 min). In external-agent mode the
-  // active Claude session might be cron-driven (poll every 2 min) → up to
-  // ~3 min latency from generate-click to first variant. 30s placeholder
-  // raced this and the user saw "offline fallback" before real Opus variants
-  // arrived. 5 min is long enough to cover cron latency + LLM design time.
-  // The generating-overlay animation continues to indicate "designer working".
-  const PLACEHOLDER_TIMEOUT_MS = 300_000;
-  // Derive the user-facing wait wording from the constant so the message can't
-  // drift away from the actual timeout again (was hard-coded "30s" after the
-  // Phase 7.10 bump to 300s).
-  const placeholderWaitLabel = `${Math.round(PLACEHOLDER_TIMEOUT_MS / 60000)} min`;
-  const schedulePlaceholderVariants = (count: number): void => {
-    clearPlaceholderTimer();
-    placeholderTimer = window.setTimeout(() => {
-      const fallback: Variant[] = Array.from({ length: Math.max(1, count) }).map(
-        (_, i) => ({
-          id: `placeholder-${i}`,
-          css: `:scope { /* @param: kind=range min=0 max=24 step=2 label="padding" */ --wisp-pad: ${4 * (i + 1)}px; }`,
-          cssVars: { "--wisp-pad": `${4 * (i + 1)}px` },
-          rationale:
-            i === 0
-              ? `Offline fallback after ${placeholderWaitLabel} — no /wisp-design live session is polling. Run \`/wisp-design live\` in Claude Code so I can design real variants.`
-              : `Offline fallback ${i + 1} — adjust the padding slider to preview.`,
-        }),
-      );
-      machine.send("generate-variants-arrived", { variants: fallback });
-    }, PLACEHOLDER_TIMEOUT_MS);
-  };
-  const clearPlaceholderTimer = (): void => {
-    if (placeholderTimer !== null) {
-      window.clearTimeout(placeholderTimer);
-      placeholderTimer = null;
-    }
-  };
+  // Phase 7.17 — the old offline placeholder fallback (30s → 300s) is GONE.
+  // Real design work routinely outlasted any fixed timeout, and the fake
+  // "Offline fallback" set replaced the honest waiting state with confusing
+  // pseudo-variants. The generating state now waits indefinitely; the user
+  // exits via ESC / Cancel, and late variants always render (cycling →
+  // cycling swap stays in the transition table).
 
   // -------------------------------------------------------------------------
   // bridge SSE — agent → browser. PHASE-4 wires the real handler; for now we
@@ -694,7 +615,6 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
 
   const detachBridge = bridge.subscribe((ev) => {
     if (ev.kind === "cycling") {
-      clearPlaceholderTimer();
       const variants: Variant[] = ev.variants.map((v) => ({
         id: v.id,
         css: v.css,
@@ -707,8 +627,8 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
       // every cycling state entry (for session log + agent visibility); the
       // bridge fanouts that event back to us via SSE; we'd then re-enter
       // cycling → cycling, infinite loop. Skip if incoming variant IDs match
-      // current state. Only forward when IDs DIFFER (real agent replacing
-      // placeholder, or different agent variants).
+      // current state. Only forward when IDs DIFFER (agent pushing a new
+      // replacement set).
       const cur = machine.current().state;
       if (cur.kind === "cycling") {
         const sameLength = cur.variants.length === variants.length;
@@ -744,14 +664,12 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
       else if (k === "cycling") machine.send("cycle-discard");
     },
     teardown(): void {
-      clearPlaceholderTimer();
       unsubscribe();
       detachBridge();
       detachKeyboard();
       disarmPicker();
       disarmMultiSelect();
       tearDownRender();
-      unmountGeneratingOverlay();
       multi.clear();
       bar.teardown();
       bridge.close();

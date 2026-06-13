@@ -59,6 +59,8 @@ export interface GeneratingTarget {
 export interface InvokeClaudeRequest {
   target: GeneratingTarget;
   freeText: string;
+  /** Phase 7.17 — pasted design-reference code from the snippet popup. */
+  codeSnippet?: string;
   variantCount: number;
 }
 
@@ -311,6 +313,20 @@ export function buildVariantPrompt(req: InvokeClaudeRequest): string {
   };
   const tagHint = tagHints[req.target.tag.toUpperCase()] ?? "any primary axis";
 
+  // Phase 7.17 — pasted design-reference code rides along as its own block.
+  // Cap mirrors CODE_SNIPPET_MAX_LEN; the snippet describes the LOOK the
+  // user wants, in whatever framework they copied it from.
+  const snippetBlock =
+    req.codeSnippet !== undefined && req.codeSnippet.length > 0
+      ? [
+          `DESIGN REFERENCE CODE (user-pasted, any framework — reproduce the LOOK via CSS variants, do not echo the code):`,
+          "```",
+          req.codeSnippet.slice(0, 20000),
+          "```",
+          ``,
+        ]
+      : [];
+
   return [
     `You are designing CSS variants for the wisp-design live overlay.`,
     `Respond with ONLY raw JSON (no markdown fences, no preamble, no postscript).`,
@@ -322,6 +338,7 @@ export function buildVariantPrompt(req: InvokeClaudeRequest): string {
     `- Variants requested: ${variantCount}`,
     `- Suggested axes for this tag: ${tagHint}`,
     ``,
+    ...snippetBlock,
     `STRICT RULES:`,
     `1. Variant 0 MUST be identity baseline: css="/* baseline */", rationale="Baseline — original.".`,
     `2. The remaining ${remaining} variants each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP — do not do it.`,

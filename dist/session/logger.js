@@ -450,7 +450,13 @@ async function logConfigure(sessionId, evt, opts) {
       ts: nowIso(),
       sessionId,
       kind: "configure",
-      detail: { targetId: evt.targetId, freeText: evt.freeText }
+      detail: {
+        targetId: evt.targetId,
+        freeText: evt.freeText,
+        // Phase 7.17 — full snippet kept for session replay (.wisp/ is
+        // gitignored; size is bounded by CODE_SNIPPET_MAX_LEN).
+        ...evt.codeSnippet !== void 0 ? { codeSnippet: evt.codeSnippet } : {}
+      }
     },
     opts.projectRoot
   );

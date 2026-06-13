@@ -20,10 +20,11 @@ export const WISP_VARIANT_DATA_ATTRIBUTE = "data-wisp-variant";
 export const WISP_CSS_DATA_ATTRIBUTE = "data-wisp-css";
 export const WISP_SESSION_DATA_ATTRIBUTE = "data-wisp-session";
 
-export const LIVE_JS_VERSION_TAG = "0.11.0-prerelease";
+export const LIVE_JS_VERSION_TAG = "0.11.2-prerelease";
 
 export const FREE_TEXT_MAX_LEN = 4000;
 export const ANNOTATION_NOTE_MAX_LEN = 2000;
+export const CODE_SNIPPET_MAX_LEN = 20000;
 
 // State-transition table — the authoritative shape lives in contracts as
 // `STATE_TRANSITIONS`. Re-declared here as plain string tuples to avoid the
@@ -46,11 +47,8 @@ export const STATE_TRANSITIONS: readonly StateTransition[] = [
   { from: "generating", to: "cycling", event: "generate-variants-arrived" },
   { from: "generating", to: "configuring", event: "generate-error" },
   { from: "generating", to: "configuring", event: "generate-cancel" },
-  // Phase 7.8 — accept variant-swap from cycling too. Without this, when the
-  // 30s placeholder fallback fires before the real agent variants arrive,
-  // the late real variants get rejected (state already in cycling). Allowing
-  // cycling → cycling on `generate-variants-arrived` means the placeholder
-  // is automatically replaced when the agent catches up.
+  // Phase 7.8 — accept variant-swap from cycling too: the agent may push a
+  // replacement set (refinement round) while the previous one is displayed.
   { from: "cycling", to: "cycling", event: "generate-variants-arrived" },
   { from: "cycling", to: "cycling", event: "cycle-next" },
   { from: "cycling", to: "cycling", event: "cycle-prev" },

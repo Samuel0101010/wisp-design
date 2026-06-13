@@ -73,7 +73,11 @@ Mit `persistent: true`, `timeout_ms: 3600000`. Jeder user-driven Event (`generat
 
 **Schritt A4 — Wenn eine Monitor-Notification ankommt** (Event-Loop, automatisch pro Notification):
 
-Du bekommst eine Notification mit dem rohen `data: {...}` Line. Parse das JSON, lies `target.selector`, `target.tag`, `freeText`, `variantCount`, `sessionId`.
+Du bekommst eine Notification mit dem rohen `data: {...}` Line. Parse das JSON, lies `target.selector`, `target.tag`, `freeText`, `variantCount`, `sessionId` — und optional `codeSnippet` (Phase 7.17).
+
+**`codeSnippet` (optional):** User-eingefügter Referenz-Code aus dem Snippet-Popup (beliebiges Framework — styled-components, Vue, HTML/CSS, …). Er beschreibt den LOOK, den der User will. Reproduziere die OPTIK als CSS-Varianten fürs gepickte Element — den Code NIEMALS 1:1 echoen oder als Framework-Code einbauen. `freeText` kann dabei LEER sein (Snippet-only Generate); dann ist das Snippet die gesamte Intent. Sind beide gesetzt, beschreibt freeText das Ziel und das Snippet die Referenz.
+
+**Kein Offline-Fallback (Phase 7.17):** Der Browser wartet im `generating`-State beliebig lange — es gibt KEINE Placeholder-Varianten mehr nach Timeout. Was du postest, ist das Erste und Einzige, was der User sieht: poste zügig, und poste IMMER etwas (im Fehlerfall einen `error`-Event), sonst wartet der Spinner bis der User abbricht.
 
 Generiere **`variantCount` DISTINCTE Varianten** (Default 3):
 - Jede auf einer anderen primären Design-Achse: **hierarchy / layout / typography / color / density**. Drei Varianten derselben Achse = SLOP, verboten.

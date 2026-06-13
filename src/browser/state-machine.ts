@@ -77,6 +77,9 @@ interface ConfigureSubmitPayload {
    *  when undefined, the generating event omits the field and the agent
    *  uses its default behavior. */
   deviation?: number;
+  /** Phase 7.17 — pasted design-reference code (snippet popup). Optional;
+   *  empty strings are dropped at the parser. */
+  codeSnippet?: string;
 }
 interface GenerateArrivedPayload {
   variants: Variant[];
@@ -112,6 +115,7 @@ function configureEdit(payload: unknown): ConfigureEditPayload | null {
 function configureSubmit(payload: unknown): ConfigureSubmitPayload {
   let count = 3;
   let deviation: number | undefined;
+  let codeSnippet: string | undefined;
   if (isObject(payload)) {
     if (typeof payload.requestedVariantCount === "number") {
       count = payload.requestedVariantCount;
@@ -120,10 +124,14 @@ function configureSubmit(payload: unknown): ConfigureSubmitPayload {
       const d = Math.round(payload.deviation);
       if (d >= 1 && d <= 5) deviation = d;
     }
+    if (typeof payload.codeSnippet === "string" && payload.codeSnippet.length > 0) {
+      codeSnippet = payload.codeSnippet;
+    }
   }
-  return deviation === undefined
-    ? { requestedVariantCount: count }
-    : { requestedVariantCount: count, deviation };
+  const out: ConfigureSubmitPayload = { requestedVariantCount: count };
+  if (deviation !== undefined) out.deviation = deviation;
+  if (codeSnippet !== undefined) out.codeSnippet = codeSnippet;
+  return out;
 }
 
 function generateArrived(payload: unknown): GenerateArrivedPayload | null {
@@ -224,14 +232,16 @@ function reduce(
       if (p.deviation !== undefined) {
         (next as { deviation?: number }).deviation = p.deviation;
       }
+      if (p.codeSnippet !== undefined) {
+        (next as { codeSnippet?: string }).codeSnippet = p.codeSnippet;
+      }
       return next;
     }
 
     case "generate-variants-arrived": {
       // Phase 7.8 — accept from BOTH generating and cycling. The latter
-      // handles the late-arrival case where a 30s placeholder fallback
-      // already moved us into cycling but Claude's real variants finally
-      // landed: we swap them in, reset activeIndex, clear param overrides.
+      // lets the agent push a replacement set (refinement round) while a
+      // previous one is displayed: swap in, reset activeIndex + overrides.
       if (state.kind !== "generating" && state.kind !== "cycling") return state;
       const p = generateArrived(payload);
       if (!p || p.variants.length === 0) return state;

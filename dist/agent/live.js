@@ -64,7 +64,13 @@ var init_bridge = __esm({
     GeneratingEventSchema = z.object({
       kind: z.literal("generating"),
       target: ElementTargetSchema,
-      freeText: z.string().min(1).max(4e3),
+      // Phase 7.17 — may be empty when `codeSnippet` carries the whole intent
+      // (snippet-only generate). The UI enforces text-or-snippet; a zod .refine
+      // is not possible here (discriminatedUnion requires plain ZodObject).
+      freeText: z.string().max(4e3),
+      // Phase 7.17 — pasted design-reference code from the snippet popup. The
+      // agent ports it to the project's stack; it never reaches the DOM raw.
+      codeSnippet: z.string().min(1).max(2e4).optional(),
       variantCount: z.number().int().min(1).max(8),
       // Phase 7.15 — deviation tells the agent how far variants should drift
       // from the original design. 1 = subtle (typography weight, light spacing
@@ -833,7 +839,13 @@ async function logConfigure(sessionId2, evt, opts) {
       ts: nowIso(),
       sessionId: sessionId2,
       kind: "configure",
-      detail: { targetId: evt.targetId, freeText: evt.freeText }
+      detail: {
+        targetId: evt.targetId,
+        freeText: evt.freeText,
+        // Phase 7.17 — full snippet kept for session replay (.wisp/ is
+        // gitignored; size is bounded by CODE_SNIPPET_MAX_LEN).
+        ...evt.codeSnippet !== void 0 ? { codeSnippet: evt.codeSnippet } : {}
+      }
     },
     opts.projectRoot
   );
@@ -3332,6 +3344,13 @@ function buildVariantPrompt(req) {
     DIV: "density, layout, hierarchy, shadow"
   };
   const tagHint = tagHints[req.target.tag.toUpperCase()] ?? "any primary axis";
+  const snippetBlock = req.codeSnippet !== void 0 && req.codeSnippet.length > 0 ? [
+    `DESIGN REFERENCE CODE (user-pasted, any framework \u2014 reproduce the LOOK via CSS variants, do not echo the code):`,
+    "```",
+    req.codeSnippet.slice(0, 2e4),
+    "```",
+    ``
+  ] : [];
   return [
     `You are designing CSS variants for the wisp-design live overlay.`,
     `Respond with ONLY raw JSON (no markdown fences, no preamble, no postscript).`,
@@ -3343,6 +3362,7 @@ function buildVariantPrompt(req) {
     `- Variants requested: ${variantCount}`,
     `- Suggested axes for this tag: ${tagHint}`,
     ``,
+    ...snippetBlock,
     `STRICT RULES:`,
     `1. Variant 0 MUST be identity baseline: css="/* baseline */", rationale="Baseline \u2014 original.".`,
     `2. The remaining ${remaining} variants each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP \u2014 do not do it.`,
@@ -7836,7 +7856,15 @@ async function dispatchEvent(ev, state, flags, cwd) {
     case "generating": {
       const selector = ev.target.selector;
       const targetId = ev.target.selector;
-      await sessionLogger2.logConfigure(state.sessionId, { targetId, freeText: ev.freeText }, logOpts);
+      await sessionLogger2.logConfigure(
+        state.sessionId,
+        {
+          targetId,
+          freeText: ev.freeText,
+          ...ev.codeSnippet !== void 0 ? { codeSnippet: ev.codeSnippet } : {}
+        },
+        logOpts
+      );
       lastConfigureContext.set(selector, {
         freeText: ev.freeText,
         targetTag: ev.target.tag
@@ -7859,8 +7887,9 @@ async function dispatchEvent(ev, state, flags, cwd) {
         }
         if (flags.externalAgent) {
           if (!flags.quiet) {
+            const snippetNote = ev.codeSnippet !== void 0 ? ` codeSnippet=${ev.codeSnippet.length} chars` : "";
             process.stdout.write(
-              `wisp-design live: external-agent \u2014 generating event waiting for active Claude session to design variants. freeText="${ev.freeText.slice(0, 60)}\u2026"
+              `wisp-design live: external-agent \u2014 generating event waiting for active Claude session to design variants. freeText="${ev.freeText.slice(0, 60)}\u2026"${snippetNote}
 `
             );
           }
@@ -7880,6 +7909,7 @@ async function dispatchEvent(ev, state, flags, cwd) {
             {
               target: { selector: ev.target.selector, tag: ev.target.tag },
               freeText: ev.freeText,
+              ...ev.codeSnippet !== void 0 ? { codeSnippet: ev.codeSnippet } : {},
               variantCount
             },
             {}

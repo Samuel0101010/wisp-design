@@ -276,7 +276,7 @@ async function logPick(
 
 async function logConfigure(
   sessionId: string,
-  evt: { targetId: string; freeText: string },
+  evt: { targetId: string; freeText: string; codeSnippet?: string },
   opts: SessionLoggerOptions,
 ): Promise<void> {
   await appendEntry(
@@ -284,7 +284,13 @@ async function logConfigure(
       ts: nowIso(),
       sessionId,
       kind: "configure",
-      detail: { targetId: evt.targetId, freeText: evt.freeText },
+      detail: {
+        targetId: evt.targetId,
+        freeText: evt.freeText,
+        // Phase 7.17 — full snippet kept for session replay (.wisp/ is
+        // gitignored; size is bounded by CODE_SNIPPET_MAX_LEN).
+        ...(evt.codeSnippet !== undefined ? { codeSnippet: evt.codeSnippet } : {}),
+      },
     },
     opts.projectRoot,
   );

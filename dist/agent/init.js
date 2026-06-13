@@ -870,7 +870,13 @@ var ConfigureEventSchema = z5.object({
 var GeneratingEventSchema = z5.object({
   kind: z5.literal("generating"),
   target: ElementTargetSchema,
-  freeText: z5.string().min(1).max(4e3),
+  // Phase 7.17 — may be empty when `codeSnippet` carries the whole intent
+  // (snippet-only generate). The UI enforces text-or-snippet; a zod .refine
+  // is not possible here (discriminatedUnion requires plain ZodObject).
+  freeText: z5.string().max(4e3),
+  // Phase 7.17 — pasted design-reference code from the snippet popup. The
+  // agent ports it to the project's stack; it never reaches the DOM raw.
+  codeSnippet: z5.string().min(1).max(2e4).optional(),
   variantCount: z5.number().int().min(1).max(8),
   // Phase 7.15 — deviation tells the agent how far variants should drift
   // from the original design. 1 = subtle (typography weight, light spacing

@@ -25,6 +25,7 @@
 
 import {
   ANNOTATION_NOTE_MAX_LEN,
+  CODE_SNIPPET_MAX_LEN,
   DEFAULT_VARIANT_COUNT,
   FREE_TEXT_MAX_LEN,
   MAX_VARIANT_COUNT,
@@ -310,6 +311,33 @@ const BAR_STYLES =
   `[${W}="annotation-popover"]{` +
     `border-top:1px solid ${C.neutral200};margin-top:10px;padding-top:10px;` +
   `}` +
+  // Code-snippet row + popup (Phase 7.17)
+  `[${W}="snippet-row"]{display:flex;gap:8px;align-items:center;margin-top:8px}` +
+  `[${W}="snippet-badge"]{` +
+    `font-size:11px;background:${C.neutral100};color:${C.text700};` +
+    `border:1px solid ${C.neutral200};border-radius:9999px;padding:2px 8px;` +
+    `font-variant-numeric:tabular-nums;` +
+  `}` +
+  `[${W}="snippet-popup-backdrop"]{` +
+    `position:fixed;inset:0;z-index:2147483647;` +
+    `background:rgb(23 23 23 / 0.32);` +
+    `display:flex;align-items:center;justify-content:center;` +
+  `}` +
+  `[${W}="snippet-popup"]{` +
+    `background:${C.bg};border:1px solid ${C.border};border-radius:12px;` +
+    `box-shadow:${C.shadow};padding:16px;width:min(720px,calc(100vw - 48px));` +
+    `font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;` +
+    `font-size:14px;line-height:1.5;color:${C.text900};` +
+  `}` +
+  `[${W}="snippet-popup-title"]{font-weight:600;font-size:14px;margin-bottom:4px}` +
+  `[${W}="snippet-popup-hint"]{font-size:12px;color:${C.text500};margin-bottom:8px}` +
+  `[${W}="snippet-popup"] textarea{` +
+    `font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;` +
+    `min-height:260px;max-height:50vh;white-space:pre;` +
+  `}` +
+  `[${W}="snippet-popup-count"]{` +
+    `font-size:11px;color:${C.text400};font-variant-numeric:tabular-nums;` +
+  `}` +
   // Param slot inherits layout
   `[${W}="param-slot"]{margin-top:4px}` +
   // Selected element outline on host page
@@ -411,8 +439,16 @@ export interface FloatingBarOptions {
   /** Phase 7.15 — `deviation` (1..5) tells the agent how far the variants
    *  should drift from the original. Optional for back-compat with callers
    *  that don't read it yet; the generating-event payload simply omits the
-   *  field when undefined. */
-  onFreeTextSubmit: (text: string, variantCount: number, deviation?: number) => void;
+   *  field when undefined.
+   *  Phase 7.17 — `codeSnippet` is the pasted design-reference code from the
+   *  snippet popup. Text-only, snippet-only, and text+snippet all submit;
+   *  the bar guarantees at least one of the two is non-empty. */
+  onFreeTextSubmit: (
+    text: string,
+    variantCount: number,
+    deviation?: number,
+    codeSnippet?: string,
+  ) => void;
   onConfigureCancel: () => void;
   onGenerateCancel: () => void;
   onCycleNext: () => void;
@@ -531,6 +567,103 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
   // points. Reset to [] when the bar exits the configure→generate cycle.
   let lastConfigureTargets: PickResult[] = [];
 
+  // Phase 7.17 — staged code snippet (popup). Instance-scoped (like the
+  // deviation slider) so it survives configure re-renders and generate-error
+  // round-trips; cleared when the flow returns to idle. Deliberately NOT run
+  // through sanitizeFreeText: that scrubber strips tags/handlers and would
+  // mangle real component code. The snippet only ever reaches textarea.value
+  // and the JSON bridge payload — never innerHTML/style/querySelector.
+  let stagedSnippet = "";
+  const capSnippet = (s: string): string => {
+    const normalized = s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // Strip C0 controls except \t \n (code keeps its layout); hard cap, no
+    // word-boundary truncation — code has no prose boundaries.
+    // eslint-disable-next-line no-control-regex
+    const cleaned = normalized.replace(/[ --]/g, "");
+    return cleaned.slice(0, CODE_SNIPPET_MAX_LEN);
+  };
+  const snippetSizeLabel = (): string =>
+    stagedSnippet.length >= 1000
+      ? `${(stagedSnippet.length / 1000).toFixed(1)}k chars`
+      : `${stagedSnippet.length} chars`;
+
+  const closeSnippetPopup = (): void => {
+    document
+      .querySelector(`[${WISP_UI_DATA_ATTRIBUTE}="snippet-popup-backdrop"]`)
+      ?.remove();
+  };
+
+  // Popup with a large monospace textarea for pasting design-reference code.
+  // `onApplied` lets the configure render refresh its badge/Generate state.
+  const openSnippetPopup = (onApplied: () => void): void => {
+    closeSnippetPopup();
+    const backdrop = el("div", {
+      [WISP_UI_DATA_ATTRIBUTE]: "snippet-popup-backdrop",
+    });
+    const popup = el("div", {
+      [WISP_UI_DATA_ATTRIBUTE]: "snippet-popup",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": "Code snippet",
+    });
+
+    const title = el("div", { [WISP_UI_DATA_ATTRIBUTE]: "snippet-popup-title" });
+    title.textContent = "Code snippet";
+    popup.appendChild(title);
+
+    const hint = el("div", { [WISP_UI_DATA_ATTRIBUTE]: "snippet-popup-hint" });
+    hint.textContent =
+      "Paste reference code for the design you want (any framework). " +
+      "It is sent to the design agent alongside your prompt — works with or without prompt text.";
+    popup.appendChild(hint);
+
+    const area = el("textarea", {
+      [WISP_UI_DATA_ATTRIBUTE]: "snippet-text",
+      maxlength: String(CODE_SNIPPET_MAX_LEN),
+      placeholder: "// Paste the code snippet here…",
+      spellcheck: "false",
+    });
+    area.setAttribute("aria-label", "Code snippet");
+    area.value = stagedSnippet;
+    popup.appendChild(area);
+
+    const controls = el("div", { [WISP_UI_DATA_ATTRIBUTE]: "row" });
+    const count = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "snippet-popup-count" });
+    const updateCount = (): void => {
+      count.textContent = `${area.value.length} / ${CODE_SNIPPET_MAX_LEN}`;
+    };
+    updateCount();
+    area.addEventListener("input", updateCount);
+    controls.appendChild(count);
+    controls.appendChild(el("div", { [WISP_UI_DATA_ATTRIBUTE]: "spacer" }));
+
+    const cancel = btn("secondary", "Cancel", () => closeSnippetPopup());
+    controls.appendChild(cancel);
+    if (stagedSnippet.length > 0) {
+      const remove = btn("secondary", "Remove", () => {
+        stagedSnippet = "";
+        closeSnippetPopup();
+        onApplied();
+      });
+      controls.appendChild(remove);
+    }
+    const apply = btn("primary", "Apply", () => {
+      stagedSnippet = capSnippet(area.value);
+      closeSnippetPopup();
+      onApplied();
+    });
+    controls.appendChild(apply);
+    popup.appendChild(controls);
+
+    backdrop.appendChild(popup);
+    // Click on the dimmed backdrop (not the popup) dismisses without applying.
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) closeSnippetPopup();
+    });
+    document.body.appendChild(backdrop);
+    window.setTimeout(() => area.focus(), 50);
+  };
+
   // Phase 7.14 — single helper to mount the tool-icon row inside `container`.
   // Used by every non-picking/generating render so the 5 tool panels
   // (tokens / audit / recent / settings / about) are reachable mid-flow,
@@ -555,6 +688,10 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     closeActiveShimmer();
     closeActiveMorph();
     lastConfigureTargets = [];
+    // Phase 7.17 — a finished/cancelled flow must not leak its snippet into
+    // the next pick.
+    stagedSnippet = "";
+    closeSnippetPopup();
     clear(content);
 
     content.appendChild(makeBrand());
@@ -647,6 +784,31 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     });
     content.appendChild(textarea);
 
+    // Phase 7.17 — code-snippet popup trigger. The textarea is for prose;
+    // pasted reference code goes through the popup (own, larger limit) and
+    // submits alongside or instead of the prompt text.
+    const snippetRow = el("div", { [WISP_UI_DATA_ATTRIBUTE]: "snippet-row" });
+    const snippetBadge = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "snippet-badge" });
+    const refreshSnippetRow = (): void => {
+      if (stagedSnippet.length > 0) {
+        snippetBadge.textContent = `✓ ${snippetSizeLabel()}`;
+        snippetBadge.style.display = "";
+      } else {
+        snippetBadge.style.display = "none";
+      }
+    };
+    const snippetBtn = btn("secondary", "</> Code snippet", () =>
+      openSnippetPopup(refreshSnippetRow),
+    );
+    snippetBtn.setAttribute(
+      "aria-label",
+      "Add a code snippet as design reference",
+    );
+    snippetRow.appendChild(snippetBtn);
+    snippetRow.appendChild(snippetBadge);
+    refreshSnippetRow();
+    content.appendChild(snippetRow);
+
     // Phase 7.15 — Deviation slider. Lets the user dial how far variants
     // should drift from the original (1 = subtle refinement, 5 = radical
     // reimagining). Persists via localStorage so the choice survives
@@ -713,7 +875,12 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
         MIN_VARIANT_COUNT,
         MAX_VARIANT_COUNT,
       );
-      opts.onFreeTextSubmit(text, count, currentDeviation);
+      opts.onFreeTextSubmit(
+        text,
+        count,
+        currentDeviation,
+        stagedSnippet.length > 0 ? stagedSnippet : undefined,
+      );
     };
     // Context-aware chip set — adapts to what the picker actually captured.
     // Picking an h1 shouldn't suggest "rounder" (text isn't a corner-radius
@@ -747,13 +914,20 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
 
     const generate = btn("primary", "Generate", () => {
       const text = opts.sanitize.sanitizeFreeText(textarea.value);
-      if (text.length === 0) return;
+      // Phase 7.17 — text-only, snippet-only, or both. Only the fully empty
+      // combination no-ops.
+      if (text.length === 0 && stagedSnippet.length === 0) return;
       const count = clamp(
         Number(variantSelect.value) || DEFAULT_VARIANT_COUNT,
         MIN_VARIANT_COUNT,
         MAX_VARIANT_COUNT,
       );
-      opts.onFreeTextSubmit(text, count, currentDeviation);
+      opts.onFreeTextSubmit(
+        text,
+        count,
+        currentDeviation,
+        stagedSnippet.length > 0 ? stagedSnippet : undefined,
+      );
     });
     controls.appendChild(generate);
 
@@ -801,7 +975,13 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
     const elapsed = el("span", { [WISP_UI_DATA_ATTRIBUTE]: "elapsed" });
     const updateElapsed = (): void => {
       const secs = Math.max(0, Math.floor((perfNow() - ctx.startedAt) / 100) / 10);
-      elapsed.textContent = `Generating ${ctx.requestedVariantCount} variant${ctx.requestedVariantCount !== 1 ? "s" : ""}… ${secs.toFixed(1)}s`;
+      // Phase 7.17 — no offline fallback means waits can run long; switch to
+      // m:ss after the first minute so the counter stays readable.
+      const label =
+        secs < 60
+          ? `${secs.toFixed(1)}s`
+          : `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, "0")} min`;
+      elapsed.textContent = `Generating ${ctx.requestedVariantCount} variant${ctx.requestedVariantCount !== 1 ? "s" : ""}… ${label}`;
     };
     updateElapsed();
     row.appendChild(elapsed);
@@ -1029,6 +1209,17 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
 
   const handleKeyInternal = (e: KeyboardEvent): void => {
     if (e.key === "Escape") {
+      // Phase 7.17 — snippet popup closes FIRST and swallows the event so a
+      // popup-ESC never cancels the whole configure flow underneath.
+      const snippetPopup = document.querySelector(
+        `[${WISP_UI_DATA_ATTRIBUTE}="snippet-popup-backdrop"]`,
+      );
+      if (snippetPopup) {
+        snippetPopup.remove();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       const popover = content.querySelector(`[${WISP_UI_DATA_ATTRIBUTE}="annotation-popover"]`);
       if (popover) {
         popover.remove();
@@ -1081,6 +1272,7 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
       closeActiveTools();
       closeActiveShimmer();
       closeActiveMorph();
+      closeSnippetPopup();
       document.removeEventListener("keydown", handleKeyInternal, true);
       if (container.parentNode) container.parentNode.removeChild(container);
       const styles = document.querySelector(`style[${WISP_UI_DATA_ATTRIBUTE}="bar-styles"]`);
@@ -1098,6 +1290,16 @@ export function createFloatingBar(opts: FloatingBarOptions): FloatingBarHandle {
 
         if (e.key === "Escape") {
           // Don't check inText for ESC — standard UX lets ESC always dismiss
+          // Phase 7.17 — snippet popup dismisses first (see handleKeyInternal;
+          // duplicated here in case the capture handler was detached).
+          const snippetPopup = document.querySelector(
+            `[${WISP_UI_DATA_ATTRIBUTE}="snippet-popup-backdrop"]`,
+          );
+          if (snippetPopup) {
+            snippetPopup.remove();
+            e.preventDefault();
+            return;
+          }
           const popover = content.querySelector(`[${WISP_UI_DATA_ATTRIBUTE}="annotation-popover"]`);
           if (popover) {
             popover.remove();

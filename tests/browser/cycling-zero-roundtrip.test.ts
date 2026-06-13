@@ -180,8 +180,8 @@ describe("cycling — zero-roundtrip (finding #2)", () => {
   });
 });
 
-describe("offline-fallback rationale (finding #7)", () => {
-  it("states the real placeholder timeout (5 min), not a stale 30s", async () => {
+describe("no offline fallback (Phase 7.17)", () => {
+  it("generating waits indefinitely — late real variants still render", async () => {
     vi.useFakeTimers();
     try {
       const handle = await init({ bridgeUrl: "http://127.0.0.1:8400", token: "t" });
@@ -200,13 +200,21 @@ describe("offline-fallback rationale (finding #7)", () => {
       generate.click();
       expect(handle.state().kind).toBe("generating");
 
-      // Fire the placeholder timeout (300_000 ms) — no SSE variants arrived.
-      vi.advanceTimersByTime(300_000);
+      // Long design sessions (>5 min) must NOT flip into pseudo-variants —
+      // the old 300s placeholder fallback is removed.
+      vi.advanceTimersByTime(600_000);
+      expect(handle.state().kind).toBe("generating");
+
+      // The real variants arrive after 10 min and render normally.
+      pushSse({
+        kind: "cycling",
+        variants: [{ id: "late-a", css: ":scope { color: red; }", rationale: "late but real" }],
+        activeIndex: 0,
+      } as unknown as BridgeEvent);
       const st = handle.state();
       expect(st.kind).toBe("cycling");
-      const first = (st as { variants: Array<{ rationale: string }> }).variants[0];
-      expect(first?.rationale).toContain("5 min");
-      expect(first?.rationale).not.toContain("30s");
+      const first = (st as { variants: Array<{ id: string }> }).variants[0];
+      expect(first?.id).toBe("late-a");
 
       handle.teardown();
     } finally {
