@@ -12,7 +12,11 @@
 // generating state (bar spinner + on-element shimmer) waits as long as the
 // designer needs. ESC / Cancel remain the user's exit.
 
-import { DEFAULT_VARIANT_COUNT, LIVE_JS_VERSION_TAG } from "./constants.js";
+import {
+  DEFAULT_VARIANT_COUNT,
+  LIVE_JS_VERSION_TAG,
+  MAX_VARIANT_COUNT,
+} from "./constants.js";
 import { readVariantCount } from "./persisted-settings.js";
 import type {
   Annotation,
@@ -158,6 +162,11 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
           sessionId,
           variantCss: active.css,
           rationale: active.rationale,
+          // Phase 7.18 — html variants carry their replacement markup so the
+          // accept consumer can splice/port the full look, not just CSS.
+          ...(typeof active.html === "string" && active.html.length > 0
+            ? { variantHtml: active.html }
+            : {}),
         };
         void bridge.postEvent(ev).catch(() => undefined);
       }
@@ -570,6 +579,9 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
                 id: v.id,
                 css: v.css,
                 rationale: v.rationale,
+                ...(typeof v.html === "string" && v.html.length > 0
+                  ? { html: v.html }
+                  : {}),
               })),
               activeIndex: st.activeIndex,
               sessionId,
@@ -615,21 +627,30 @@ export async function init(opts: InitOptions): Promise<WispDesignHandle> {
 
   const detachBridge = bridge.subscribe((ev) => {
     if (ev.kind === "cycling") {
-      const variants: Variant[] = ev.variants.map((v) => ({
+      let variants: Variant[] = ev.variants.map((v) => ({
         id: v.id,
         css: v.css,
         // Lift declared `/* @param */ --wisp-*` values so the morph slider is
         // usable for real agent variants (it diffs cssVars across the set).
         cssVars: cssVarsFromCss(v.css),
         rationale: v.rationale,
+        // Phase 7.18 — optional replacement markup for 1:1 reference fidelity.
+        ...(typeof v.html === "string" && v.html.length > 0 ? { html: v.html } : {}),
       }));
+      const cur = machine.current().state;
+      // Phase 7.18 — enforce the user's requested variant count. The set is
+      // baseline (entry 0) + N design proposals; an agent that overshoots
+      // gets clamped so "Variants: 1" really shows 1 proposal.
+      if (cur.kind === "generating") {
+        const maxCards = Math.min(cur.requestedVariantCount + 1, MAX_VARIANT_COUNT);
+        if (variants.length > maxCards) variants = variants.slice(0, maxCards);
+      }
       // Phase 7.8 — echo-guard. The browser POSTs cycling to the bridge on
       // every cycling state entry (for session log + agent visibility); the
       // bridge fanouts that event back to us via SSE; we'd then re-enter
       // cycling → cycling, infinite loop. Skip if incoming variant IDs match
       // current state. Only forward when IDs DIFFER (agent pushing a new
       // replacement set).
-      const cur = machine.current().state;
       if (cur.kind === "cycling") {
         const sameLength = cur.variants.length === variants.length;
         const sameIds =

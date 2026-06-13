@@ -1,6 +1,6 @@
 {
   "name": "wisp-design",
-  "version": "0.11.2-prerelease",
+  "version": "0.11.3-prerelease",
   "description": "Live-Frontend-Design fÃ¼r Claude Code. Click element â†’ 3 distincte Varianten in echtem HMR â†’ a11y-gated Accept â†’ fs.writeFileSync. Verification-Gate vor jedem Accept.",
   "author": {
     "name": "Samuel Heftberger",

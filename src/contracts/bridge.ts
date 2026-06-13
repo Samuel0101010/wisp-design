@@ -121,6 +121,10 @@ export const VariantSchema = z.object({
   id: z.string().min(1),
   css: z.string(),
   rationale: z.string().min(1).max(280),
+  // Phase 7.18 — optional replacement markup for 1:1 reference fidelity.
+  // Rendered (sanitised) INSTEAD of the cloned target inside the variant
+  // host; `css` still applies via @scope. Pure-CSS variants omit it.
+  html: z.string().min(1).max(30000).optional(),
 });
 export type Variant = z.infer<typeof VariantSchema>;
 
@@ -184,6 +188,8 @@ export const AcceptEventSchema = z.object({
   // falls back to stub regeneration.
   variantCss: z.string().optional(),
   rationale: z.string().optional(),
+  // Phase 7.18 — replacement markup of an accepted html variant.
+  variantHtml: z.string().optional(),
 });
 
 export const DiscardEventSchema = z.object({

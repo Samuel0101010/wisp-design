@@ -276,7 +276,13 @@ async function logPick(
 
 async function logConfigure(
   sessionId: string,
-  evt: { targetId: string; freeText: string; codeSnippet?: string },
+  evt: {
+    targetId: string;
+    freeText: string;
+    codeSnippet?: string;
+    variantCount?: number;
+    deviation?: number;
+  },
   opts: SessionLoggerOptions,
 ): Promise<void> {
   await appendEntry(
@@ -290,6 +296,11 @@ async function logConfigure(
         // Phase 7.17 — full snippet kept for session replay (.wisp/ is
         // gitignored; size is bounded by CODE_SNIPPET_MAX_LEN).
         ...(evt.codeSnippet !== undefined ? { codeSnippet: evt.codeSnippet } : {}),
+        // Phase 7.18 — variantCount + deviation logged so an external agent
+        // can recover the FULL request even when its notification stream
+        // truncated the event (root cause of "asked for 1, got 3").
+        ...(evt.variantCount !== undefined ? { variantCount: evt.variantCount } : {}),
+        ...(evt.deviation !== undefined ? { deviation: evt.deviation } : {}),
       },
     },
     opts.projectRoot,

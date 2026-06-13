@@ -572,7 +572,11 @@ var StructuredAnnotationSchema = z3.object({
 var VariantSchema = z3.object({
   id: z3.string().min(1),
   css: z3.string(),
-  rationale: z3.string().min(1).max(280)
+  rationale: z3.string().min(1).max(280),
+  // Phase 7.18 — optional replacement markup for 1:1 reference fidelity.
+  // Rendered (sanitised) INSTEAD of the cloned target inside the variant
+  // host; `css` still applies via @scope. Pure-CSS variants omit it.
+  html: z3.string().min(1).max(3e4).optional()
 });
 var PickEventSchema = z3.object({
   kind: z3.literal("pick"),
@@ -628,7 +632,9 @@ var AcceptEventSchema = z3.object({
   // Optional for back-compat: older browsers / tests omit this and the handler
   // falls back to stub regeneration.
   variantCss: z3.string().optional(),
-  rationale: z3.string().optional()
+  rationale: z3.string().optional(),
+  // Phase 7.18 — replacement markup of an accepted html variant.
+  variantHtml: z3.string().optional()
 });
 var DiscardEventSchema = z3.object({
   kind: z3.literal("discard"),

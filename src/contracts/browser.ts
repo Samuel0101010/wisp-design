@@ -33,7 +33,7 @@ export const WISP_VARIANT_DATA_ATTRIBUTE = "data-wisp-variant";
 export const WISP_CSS_DATA_ATTRIBUTE = "data-wisp-css";
 export const WISP_SESSION_DATA_ATTRIBUTE = "data-wisp-session";
 
-export const LIVE_JS_VERSION_TAG = "0.11.2-prerelease";
+export const LIVE_JS_VERSION_TAG = "0.11.3-prerelease";
 
 // Bridge enforces 4000 chars on `ConfigureEventSchema`. Mirrored here so the
 // floating bar can show a counter without round-tripping.
@@ -43,6 +43,8 @@ export const ANNOTATION_NOTE_MAX_LEN = 2000;
 // freeText because real component sources run long; bounded so a stray paste
 // of a whole bundle can't blow up the bridge payload / session log.
 export const CODE_SNIPPET_MAX_LEN = 20000;
+// Phase 7.18 — replacement markup of an html variant (sanitised at render).
+export const VARIANT_HTML_MAX_LEN = 30000;
 
 // --- Element targeting ---
 // Browser-side analogue of bridge `ElementTarget`, enriched with `id`,
@@ -84,6 +86,10 @@ export const VariantSchema = z.object({
   cssVars: z.record(z.string(), z.string()),
   rationale: z.string().min(1).max(280),
   structureNotes: z.string().max(1000).optional(),
+  // Phase 7.18 — optional replacement markup (1:1 reference fidelity).
+  // Rendered sanitised INSTEAD of the target clone; baseline (index 0)
+  // always shows the live original, so html on variant 0 is ignored.
+  html: z.string().min(1).max(VARIANT_HTML_MAX_LEN).optional(),
 });
 export type Variant = z.infer<typeof VariantSchema>;
 

@@ -298,8 +298,10 @@ export function parseClaudeEnvelope(
 // ---------------------------------------------------------------------------
 
 export function buildVariantPrompt(req: InvokeClaudeRequest): string {
-  const variantCount = Math.max(1, Math.min(8, req.variantCount));
-  const remaining = variantCount - 1;
+  // Phase 7.18 — variantCount = number of DESIGN PROPOSALS the user asked
+  // for. Baseline v0 is always added on top; total entries are capped at 8
+  // (bridge schema), so 8 requested proposals become 7 + baseline.
+  const proposals = Math.max(1, Math.min(7, req.variantCount));
   const tagHints: Record<string, string> = {
     H1: "typography axes (weight, tracking, line-height, letter-spacing)",
     H2: "typography axes (weight, tracking, line-height)",
@@ -335,13 +337,13 @@ export function buildVariantPrompt(req: InvokeClaudeRequest): string {
     `- Selector: ${req.target.selector}`,
     `- Tag: ${req.target.tag}`,
     `- User wish: "${req.freeText.replace(/"/g, '\\"').slice(0, 1000)}"`,
-    `- Variants requested: ${variantCount}`,
+    `- Design proposals requested: ${proposals} (output EXACTLY ${proposals + 1} entries: baseline v0 + ${proposals} proposals — no more, no fewer)`,
     `- Suggested axes for this tag: ${tagHint}`,
     ``,
     ...snippetBlock,
     `STRICT RULES:`,
     `1. Variant 0 MUST be identity baseline: css="/* baseline */", rationale="Baseline — original.".`,
-    `2. The remaining ${remaining} variants each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP — do not do it.`,
+    `2. The ${proposals} proposal${proposals > 1 ? "s" : ""} each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP — do not do it.`,
     `3. CSS shape: the INNER content of @scope ([data-wisp-variant="N"]) { ... }. Use ":scope > <descendant-selector>" to reach descendants of the picked element. All declarations use !important to override Tailwind/utility classes.`,
     `4. For motion variants: include @media (prefers-reduced-motion: reduce) { :scope, :scope * { animation: none !important; transition: none !important; } } at the END of that variant's css.`,
     `5. Anti-slop HARD bans (NEVER use): purple-blue gradient (from-purple-*/to-blue-*), glassmorphism (backdrop-blur), gradient-text-headline (background-clip:text on h1/h2/h3), hero-metric template (98%/3.2x/24/7 at >24px), default-tailwind-blue without justification, em-dash UI noise.`,

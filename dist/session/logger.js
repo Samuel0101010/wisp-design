@@ -455,7 +455,12 @@ async function logConfigure(sessionId, evt, opts) {
         freeText: evt.freeText,
         // Phase 7.17 — full snippet kept for session replay (.wisp/ is
         // gitignored; size is bounded by CODE_SNIPPET_MAX_LEN).
-        ...evt.codeSnippet !== void 0 ? { codeSnippet: evt.codeSnippet } : {}
+        ...evt.codeSnippet !== void 0 ? { codeSnippet: evt.codeSnippet } : {},
+        // Phase 7.18 — variantCount + deviation logged so an external agent
+        // can recover the FULL request even when its notification stream
+        // truncated the event (root cause of "asked for 1, got 3").
+        ...evt.variantCount !== void 0 ? { variantCount: evt.variantCount } : {},
+        ...evt.deviation !== void 0 ? { deviation: evt.deviation } : {}
       }
     },
     opts.projectRoot

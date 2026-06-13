@@ -18,6 +18,7 @@
 // utility classes have to keep applying to clones.
 
 import {
+  VARIANT_HTML_MAX_LEN,
   WISP_CSS_DATA_ATTRIBUTE,
   WISP_SESSION_DATA_ATTRIBUTE,
   WISP_UI_DATA_ATTRIBUTE,
@@ -78,6 +79,44 @@ function sanitiseVariantCss(css: string): string {
 
 function escapeRe(s: string): string {
   return s.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+}
+
+// ---------------------------------------------------------------------------
+// HTML assembly (Phase 7.18) — html variants replace the target clone with
+// agent-provided markup for 1:1 reference fidelity. Sanitised with a DOM
+// walker, NOT sanitizeFreeText (that scrubber strips <svg> wholesale, and
+// reference components routinely need inline SVG — moons, stars, icons).
+// Threat model: markup arrives from the token-authed bridge like variant CSS;
+// we strip active-content vectors and keep everything presentational.
+// ---------------------------------------------------------------------------
+
+// script/iframe/object/embed = code execution / nested browsing contexts.
+// style/link/base/meta = GLOBAL side effects (a <style> in the body styles the
+// whole page — variant CSS belongs in `css` where @scope isolates it).
+// form = submit/navigation surface.
+const FORBIDDEN_HTML_TAGS = "script,iframe,object,embed,style,link,base,meta,form";
+const URL_ATTRS = new Set(["href", "src", "xlink:href", "srcset", "action", "formaction"]);
+const DANGEROUS_URL_RE = /^\s*(?:javascript|data|vbscript)\s*:/i;
+
+function sanitizeVariantHtml(html: string): DocumentFragment {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.body.querySelectorAll(FORBIDDEN_HTML_TAGS).forEach((n) => n.remove());
+  for (const el of Array.from(doc.body.querySelectorAll("*"))) {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+      } else if (URL_ATTRS.has(name) && DANGEROUS_URL_RE.test(attr.value)) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
+  const frag = document.createDocumentFragment();
+  while (doc.body.firstChild) {
+    frag.appendChild(document.importNode(doc.body.firstChild, true));
+    doc.body.removeChild(doc.body.firstChild);
+  }
+  return frag;
 }
 
 function assembleStyleBlock(variants: Variant[]): string {
@@ -148,13 +187,21 @@ export function renderVariants(
   live0.appendChild(originalNode);
   siblings.push(live0);
 
-  // Remaining variants: deep clones of the original.
+  // Remaining variants: deep clones of the original — or, for html variants
+  // (Phase 7.18), the agent's sanitised replacement markup. The baseline
+  // (index 0) is always the live original, so html there is ignored.
   for (let i = 1; i < variants.length; i += 1) {
     const sib = document.createElement("div");
     sib.setAttribute(WISP_VARIANT_DATA_ATTRIBUTE, String(i));
     sib.setAttribute(WISP_UI_DATA_ATTRIBUTE, "variant-host");
-    // Deep clone preserving subtree styles.
-    sib.appendChild(originalNode.cloneNode(true));
+    const v = variants[i];
+    if (typeof v?.html === "string" && v.html.length > 0) {
+      sib.appendChild(sanitizeVariantHtml(v.html.slice(0, VARIANT_HTML_MAX_LEN)));
+      sib.setAttribute("data-wisp-html-variant", "1");
+    } else {
+      // Deep clone preserving subtree styles.
+      sib.appendChild(originalNode.cloneNode(true));
+    }
     host.appendChild(sib);
     siblings.push(sib);
   }

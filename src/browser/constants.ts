@@ -20,11 +20,12 @@ export const WISP_VARIANT_DATA_ATTRIBUTE = "data-wisp-variant";
 export const WISP_CSS_DATA_ATTRIBUTE = "data-wisp-css";
 export const WISP_SESSION_DATA_ATTRIBUTE = "data-wisp-session";
 
-export const LIVE_JS_VERSION_TAG = "0.11.2-prerelease";
+export const LIVE_JS_VERSION_TAG = "0.11.3-prerelease";
 
 export const FREE_TEXT_MAX_LEN = 4000;
 export const ANNOTATION_NOTE_MAX_LEN = 2000;
 export const CODE_SNIPPET_MAX_LEN = 20000;
+export const VARIANT_HTML_MAX_LEN = 30000;
 
 // State-transition table — the authoritative shape lives in contracts as
 // `STATE_TRANSITIONS`. Re-declared here as plain string tuples to avoid the

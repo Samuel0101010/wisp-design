@@ -65,7 +65,9 @@ describe("buildVariantPrompt", () => {
     expect(prompt).toContain("article.foo");
     expect(prompt).toContain("ARTICLE");
     expect(prompt).toContain("make it warmer");
-    expect(prompt).toContain("Variants requested: 3");
+    // Phase 7.18 — variantCount counts proposals; baseline rides on top.
+    expect(prompt).toContain("Design proposals requested: 3");
+    expect(prompt).toContain("EXACTLY 4 entries");
   });
 
   it("emits a tag-specific axis hint for ARTICLE", () => {
@@ -96,19 +98,20 @@ describe("buildVariantPrompt", () => {
     expect(p).toContain("any primary axis");
   });
 
-  it("clamps variantCount to [1, 8]", () => {
+  it("clamps proposals to [1, 7] — total stays within the 8-entry schema cap", () => {
     const lo = buildVariantPrompt({
       target: { selector: "x", tag: "DIV" },
       freeText: "y",
       variantCount: 0,
     });
-    expect(lo).toContain("Variants requested: 1");
+    expect(lo).toContain("Design proposals requested: 1");
     const hi = buildVariantPrompt({
       target: { selector: "x", tag: "DIV" },
       freeText: "y",
       variantCount: 99,
     });
-    expect(hi).toContain("Variants requested: 8");
+    expect(hi).toContain("Design proposals requested: 7");
+    expect(hi).toContain("EXACTLY 8 entries");
   });
 
   it("escapes embedded double quotes in freeText", () => {

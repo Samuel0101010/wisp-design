@@ -132,7 +132,9 @@ describe("Bug #22 — dispatchEvent responds to 'generating' event kind", () => 
     expect(call.event.kind).toBe("cycling");
   });
 
-  it("cycling event carries exactly 3 variants matching generateVariantsStub", async () => {
+  // Phase 7.18 — ev.variantCount counts DESIGN PROPOSALS; the emitted set is
+  // baseline + N ("asked for 1, got 3" root-cause fix). Totals below = N + 1.
+  it("cycling event carries baseline + 3 proposals matching generateVariantsStub", async () => {
     const ev: BridgeEvent = {
       kind: "generating",
       sessionId: "bug22-session",
@@ -148,13 +150,13 @@ describe("Bug #22 — dispatchEvent responds to 'generating' event kind", () => 
     };
     const postedVariants = call.event.variants;
 
-    // Should match the deterministic stub output for 3 variants.
-    const expected = generateVariantsStub("test-selector", 3);
-    expect(postedVariants.length).toBe(3);
+    // Should match the deterministic stub output for baseline + 3 proposals.
+    const expected = generateVariantsStub("test-selector", 4);
+    expect(postedVariants.length).toBe(4);
     expect(postedVariants.map((v) => v.id)).toEqual(expected.map((v) => v.id));
   });
 
-  it("respects ev.variantCount — generates 2 variants when requested, not flags.maxVariants", async () => {
+  it("respects ev.variantCount — 2 proposals + baseline, not flags.maxVariants", async () => {
     const ev: BridgeEvent = {
       kind: "generating",
       sessionId: "bug22-session",
@@ -169,7 +171,7 @@ describe("Bug #22 — dispatchEvent responds to 'generating' event kind", () => 
     const call = postEventMock.mock.calls[0]?.[0] as {
       event: { variants: unknown[] };
     };
-    expect(call.event.variants.length).toBe(2);
+    expect(call.event.variants.length).toBe(3);
   });
 
   it("caps at flags.maxVariants when ev.variantCount exceeds it", async () => {
@@ -181,12 +183,12 @@ describe("Bug #22 — dispatchEvent responds to 'generating' event kind", () => 
       variantCount: 8, // requests max schema allows
     };
 
-    // flags.maxVariants = 3 — the ceiling must apply.
+    // flags.maxVariants = 3 — the ceiling applies to proposals (3 + baseline).
     await dispatchEvent(ev, makeState(), makeFlags({ maxVariants: 3 }), "/tmp/project");
 
     const call = postEventMock.mock.calls[0]?.[0] as {
       event: { variants: unknown[] };
     };
-    expect(call.event.variants.length).toBe(3);
+    expect(call.event.variants.length).toBe(4);
   });
 });

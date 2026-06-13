@@ -48,7 +48,11 @@ var init_bridge = __esm({
     VariantSchema = z.object({
       id: z.string().min(1),
       css: z.string(),
-      rationale: z.string().min(1).max(280)
+      rationale: z.string().min(1).max(280),
+      // Phase 7.18 — optional replacement markup for 1:1 reference fidelity.
+      // Rendered (sanitised) INSTEAD of the cloned target inside the variant
+      // host; `css` still applies via @scope. Pure-CSS variants omit it.
+      html: z.string().min(1).max(3e4).optional()
     });
     PickEventSchema = z.object({
       kind: z.literal("pick"),
@@ -104,7 +108,9 @@ var init_bridge = __esm({
       // Optional for back-compat: older browsers / tests omit this and the handler
       // falls back to stub regeneration.
       variantCss: z.string().optional(),
-      rationale: z.string().optional()
+      rationale: z.string().optional(),
+      // Phase 7.18 — replacement markup of an accepted html variant.
+      variantHtml: z.string().optional()
     });
     DiscardEventSchema = z.object({
       kind: z.literal("discard"),
@@ -844,7 +850,12 @@ async function logConfigure(sessionId2, evt, opts) {
         freeText: evt.freeText,
         // Phase 7.17 — full snippet kept for session replay (.wisp/ is
         // gitignored; size is bounded by CODE_SNIPPET_MAX_LEN).
-        ...evt.codeSnippet !== void 0 ? { codeSnippet: evt.codeSnippet } : {}
+        ...evt.codeSnippet !== void 0 ? { codeSnippet: evt.codeSnippet } : {},
+        // Phase 7.18 — variantCount + deviation logged so an external agent
+        // can recover the FULL request even when its notification stream
+        // truncated the event (root cause of "asked for 1, got 3").
+        ...evt.variantCount !== void 0 ? { variantCount: evt.variantCount } : {},
+        ...evt.deviation !== void 0 ? { deviation: evt.deviation } : {}
       }
     },
     opts.projectRoot
@@ -3330,8 +3341,7 @@ function parseClaudeEnvelope(stdout, model) {
   };
 }
 function buildVariantPrompt(req) {
-  const variantCount = Math.max(1, Math.min(8, req.variantCount));
-  const remaining = variantCount - 1;
+  const proposals = Math.max(1, Math.min(7, req.variantCount));
   const tagHints = {
     H1: "typography axes (weight, tracking, line-height, letter-spacing)",
     H2: "typography axes (weight, tracking, line-height)",
@@ -3359,13 +3369,13 @@ function buildVariantPrompt(req) {
     `- Selector: ${req.target.selector}`,
     `- Tag: ${req.target.tag}`,
     `- User wish: "${req.freeText.replace(/"/g, '\\"').slice(0, 1e3)}"`,
-    `- Variants requested: ${variantCount}`,
+    `- Design proposals requested: ${proposals} (output EXACTLY ${proposals + 1} entries: baseline v0 + ${proposals} proposals \u2014 no more, no fewer)`,
     `- Suggested axes for this tag: ${tagHint}`,
     ``,
     ...snippetBlock,
     `STRICT RULES:`,
     `1. Variant 0 MUST be identity baseline: css="/* baseline */", rationale="Baseline \u2014 original.".`,
-    `2. The remaining ${remaining} variants each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP \u2014 do not do it.`,
+    `2. The ${proposals} proposal${proposals > 1 ? "s" : ""} each on a DIFFERENT primary axis (typography, spacing, color, layout, hierarchy, motion). Three color variations of the same layout is SLOP \u2014 do not do it.`,
     `3. CSS shape: the INNER content of @scope ([data-wisp-variant="N"]) { ... }. Use ":scope > <descendant-selector>" to reach descendants of the picked element. All declarations use !important to override Tailwind/utility classes.`,
     `4. For motion variants: include @media (prefers-reduced-motion: reduce) { :scope, :scope * { animation: none !important; transition: none !important; } } at the END of that variant's css.`,
     `5. Anti-slop HARD bans (NEVER use): purple-blue gradient (from-purple-*/to-blue-*), glassmorphism (backdrop-blur), gradient-text-headline (background-clip:text on h1/h2/h3), hero-metric template (98%/3.2x/24/7 at >24px), default-tailwind-blue without justification, em-dash UI noise.`,
@@ -7824,12 +7834,14 @@ function generateVariantsStub(selector, maxVariants, context) {
     const catalogVariants = generateVariantsFromIntent({
       freeText: context.freeText ?? "",
       targetTag: context.targetTag ?? "",
-      maxVariants
+      maxVariants: Math.max(1, maxVariants - 1)
     });
-    const out = [];
+    const out = [
+      { id: "v0", css: VARIANT_DELTAS[0].css, rationale: VARIANT_DELTAS[0].rationale }
+    ];
     for (let i = 0; i < catalogVariants.length; i += 1) {
       out.push({
-        id: `v${i}`,
+        id: `v${i + 1}`,
         css: catalogVariants[i].css,
         rationale: catalogVariants[i].rationale
       });
@@ -7861,7 +7873,9 @@ async function dispatchEvent(ev, state, flags, cwd) {
         {
           targetId,
           freeText: ev.freeText,
-          ...ev.codeSnippet !== void 0 ? { codeSnippet: ev.codeSnippet } : {}
+          ...ev.codeSnippet !== void 0 ? { codeSnippet: ev.codeSnippet } : {},
+          variantCount: ev.variantCount,
+          ...ev.deviation !== void 0 ? { deviation: ev.deviation } : {}
         },
         logOpts
       );
@@ -7870,6 +7884,7 @@ async function dispatchEvent(ev, state, flags, cwd) {
         targetTag: ev.target.tag
       });
       const variantCount = Math.min(ev.variantCount, flags.maxVariants);
+      const totalVariants = Math.min(variantCount + 1, LIVE_MAX_VARIANTS);
       if (flags.agentDriven) {
         if (state.injectedFiles.length > 0) {
           const filePath = state.injectedFiles[0];
@@ -7934,7 +7949,7 @@ async function dispatchEvent(ev, state, flags, cwd) {
 `
               );
             }
-            claudeVariants = generateVariantsStub(selector, variantCount, {
+            claudeVariants = generateVariantsStub(selector, totalVariants, {
               freeText: ev.freeText,
               targetTag: ev.target.tag
             });
@@ -7946,7 +7961,7 @@ async function dispatchEvent(ev, state, flags, cwd) {
 `
             );
           }
-          claudeVariants = generateVariantsStub(selector, variantCount, {
+          claudeVariants = generateVariantsStub(selector, totalVariants, {
             freeText: ev.freeText,
             targetTag: ev.target.tag
           });
@@ -7977,7 +7992,7 @@ async function dispatchEvent(ev, state, flags, cwd) {
         void claudeMeta;
         break;
       }
-      const variants = generateVariantsStub(selector, variantCount, {
+      const variants = generateVariantsStub(selector, totalVariants, {
         freeText: ev.freeText,
         targetTag: ev.target.tag
       });

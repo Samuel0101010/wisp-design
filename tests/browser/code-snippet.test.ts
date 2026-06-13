@@ -30,6 +30,10 @@ interface FakeES {
 }
 
 let lastES: FakeES | null = null;
+
+function pushSse(ev: Record<string, unknown>): void {
+  lastES?.onmessage?.({ data: JSON.stringify(ev) } as MessageEvent);
+}
 const origFetch = globalThis.fetch;
 const origEventSource = (globalThis as { EventSource?: unknown }).EventSource;
 
@@ -197,6 +201,45 @@ describe("code-snippet popup (Phase 7.17)", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(document.querySelector('[data-wisp-ui="snippet-popup-backdrop"]')).toBeNull();
     expect(handle.state().kind).toBe("configuring");
+
+    handle.teardown();
+  });
+});
+
+describe("variant-count clamp (Phase 7.18)", () => {
+  it('requested 1 → an overshooting 4-variant set renders as baseline + 1', async () => {
+    const handle = await init({ bridgeUrl: "http://127.0.0.1:8400", token: "t" });
+    const node = makeTarget();
+    await driveToConfiguring(handle, node);
+
+    // User picks "Variants: 1" in the configure select.
+    const select = document.querySelector<HTMLSelectElement>(
+      '[data-wisp-ui="variant-count"]',
+    )!;
+    select.value = "1";
+
+    const textarea = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    textarea.value = "one proposal please";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    findButton("Generate")!.click();
+    expect(handle.state().kind).toBe("generating");
+
+    // Agent overshoots with baseline + 3 proposals — the browser must clamp.
+    pushSse({
+      kind: "cycling",
+      variants: [
+        { id: "b0", css: "/* baseline */", rationale: "Baseline." },
+        { id: "p1", css: ":scope { color: red; }", rationale: "one" },
+        { id: "p2", css: ":scope { color: blue; }", rationale: "two" },
+        { id: "p3", css: ":scope { color: green; }", rationale: "three" },
+      ],
+      activeIndex: 0,
+    });
+
+    const st = handle.state();
+    expect(st.kind).toBe("cycling");
+    const ids = (st as { variants: Array<{ id: string }> }).variants.map((v) => v.id);
+    expect(ids).toEqual(["b0", "p1"]);
 
     handle.teardown();
   });

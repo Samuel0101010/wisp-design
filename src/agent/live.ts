@@ -236,15 +236,21 @@ export function generateVariantsStub(
   // variant set from the catalog. Backward-compat: when context is absent,
   // fall back to the legacy fixed VARIANT_DELTAS table.
   if (context !== undefined) {
+    // Phase 7.18 — `maxVariants` is the TOTAL entry count (incl. baseline).
+    // Entry 0 is always the identity baseline; the catalog fills the
+    // remaining slots with design proposals (catalog sets are finite, so
+    // fewer proposals than requested can come back — never more).
     const catalogVariants = generateVariantsFromIntent({
       freeText: context.freeText ?? "",
       targetTag: context.targetTag ?? "",
-      maxVariants,
+      maxVariants: Math.max(1, maxVariants - 1),
     });
-    const out: LiveVariantBatch["variants"] = [];
+    const out: LiveVariantBatch["variants"] = [
+      { id: "v0", css: VARIANT_DELTAS[0]!.css, rationale: VARIANT_DELTAS[0]!.rationale },
+    ];
     for (let i = 0; i < catalogVariants.length; i += 1) {
       out.push({
-        id: `v${i}`,
+        id: `v${i + 1}`,
         css: catalogVariants[i]!.css,
         rationale: catalogVariants[i]!.rationale,
       });
@@ -292,6 +298,8 @@ export async function dispatchEvent(
           targetId,
           freeText: ev.freeText,
           ...(ev.codeSnippet !== undefined ? { codeSnippet: ev.codeSnippet } : {}),
+          variantCount: ev.variantCount,
+          ...(ev.deviation !== undefined ? { deviation: ev.deviation } : {}),
         },
         logOpts,
       );
@@ -302,7 +310,10 @@ export async function dispatchEvent(
         freeText: ev.freeText,
         targetTag: ev.target.tag,
       });
+      // Phase 7.18 — ev.variantCount counts DESIGN PROPOSALS; the emitted set
+      // is baseline + N, capped at LIVE_MAX_VARIANTS total entries.
       const variantCount = Math.min(ev.variantCount, flags.maxVariants);
+      const totalVariants = Math.min(variantCount + 1, LIVE_MAX_VARIANTS);
 
       // Phase 7.9 — agent-driven mode: spawn headless `claude -p` to design
       // real LLM variants, post them back via SSE. The in-process loop is the
@@ -395,7 +406,7 @@ export async function dispatchEvent(
                   `. Falling back to intent-catalog stub.\n`,
               );
             }
-            claudeVariants = generateVariantsStub(selector, variantCount, {
+            claudeVariants = generateVariantsStub(selector, totalVariants, {
               freeText: ev.freeText,
               targetTag: ev.target.tag,
             });
@@ -406,7 +417,7 @@ export async function dispatchEvent(
               `wisp-design live: claude-invoke threw (${(err as Error).message}). Falling back to stub.\n`,
             );
           }
-          claudeVariants = generateVariantsStub(selector, variantCount, {
+          claudeVariants = generateVariantsStub(selector, totalVariants, {
             freeText: ev.freeText,
             targetTag: ev.target.tag,
           });
@@ -441,7 +452,7 @@ export async function dispatchEvent(
         break;
       }
 
-      const variants = generateVariantsStub(selector, variantCount, {
+      const variants = generateVariantsStub(selector, totalVariants, {
         freeText: ev.freeText,
         targetTag: ev.target.tag,
       });

@@ -188,7 +188,11 @@ var StructuredAnnotationSchema = z2.object({
 var VariantSchema = z2.object({
   id: z2.string().min(1),
   css: z2.string(),
-  rationale: z2.string().min(1).max(280)
+  rationale: z2.string().min(1).max(280),
+  // Phase 7.18 — optional replacement markup for 1:1 reference fidelity.
+  // Rendered (sanitised) INSTEAD of the cloned target inside the variant
+  // host; `css` still applies via @scope. Pure-CSS variants omit it.
+  html: z2.string().min(1).max(3e4).optional()
 });
 var PickEventSchema = z2.object({
   kind: z2.literal("pick"),
@@ -244,7 +248,9 @@ var AcceptEventSchema = z2.object({
   // Optional for back-compat: older browsers / tests omit this and the handler
   // falls back to stub regeneration.
   variantCss: z2.string().optional(),
-  rationale: z2.string().optional()
+  rationale: z2.string().optional(),
+  // Phase 7.18 — replacement markup of an accepted html variant.
+  variantHtml: z2.string().optional()
 });
 var DiscardEventSchema = z2.object({
   kind: z2.literal("discard"),
