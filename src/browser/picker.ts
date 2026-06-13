@@ -68,8 +68,33 @@ export function pickable(
   if (!cs) return false;
   if (cs.visibility === "hidden") return false;
   if (cs.display === "none") return false;
+  // Phase 7.19 — fully transparent elements never carry the visuals the user
+  // means (checkbox-hack inputs sit at opacity:0 OVER their styled sibling).
+  if (cs.opacity === "0") return false;
 
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// snapToVisible — Phase 7.19.
+//
+// Picking an invisible element breaks the variant preview: only the picked
+// node moves into the variants-host, so a visually-tied SIBLING (the classic
+// `<label><input style="opacity:0"><span class="slider">` switch pattern)
+// keeps rendering underneath the variant — user-reported as "the original is
+// still visible on top". Snapping to the nearest ancestor that actually
+// paints (here: the <label>) captures the whole visual unit, so variants
+// replace it cleanly.
+// ---------------------------------------------------------------------------
+
+export function snapToVisible(el: Element): Element {
+  let cur: Element | null = el;
+  while (cur instanceof HTMLElement && !FORBIDDEN_TAGS.has(cur.tagName)) {
+    const cs = cur.ownerDocument?.defaultView?.getComputedStyle(cur);
+    if (!cs || cs.opacity !== "0") return cur;
+    cur = cur.parentElement;
+  }
+  return el;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +398,10 @@ export function attachPicker(opts: AttachPickerOptions): () => void {
   }
 
   const handleMove = (e: PointerEvent): void => {
-    const el = doc.elementFromPoint(e.clientX, e.clientY);
+    const hit = doc.elementFromPoint(e.clientX, e.clientY);
+    // Phase 7.19 — invisible hits (opacity:0 overlays) snap to the visible
+    // ancestor so the outline shows what a pick would actually capture.
+    const el = hit === null ? null : snapToVisible(hit);
     if (el === null || !pickable(el, opts.pickableOpts)) {
       if (lastHovered !== null) {
         lastHovered = null;
@@ -423,9 +451,12 @@ export function attachPicker(opts: AttachPickerOptions): () => void {
   };
 
   const handleClick = (e: MouseEvent): void => {
-    const target = e.target;
-    if (!(target instanceof Element)) return;
-    if (target.closest(`[${WISP_UI_DATA_ATTRIBUTE}]`) !== null) return;
+    const raw = e.target;
+    if (!(raw instanceof Element)) return;
+    if (raw.closest(`[${WISP_UI_DATA_ATTRIBUTE}]`) !== null) return;
+    // Phase 7.19 — clicks land on opacity:0 hit-areas (checkbox-hack); pick
+    // the visible ancestor so the variant host captures the whole widget.
+    const target = snapToVisible(raw);
     if (!pickable(target, opts.pickableOpts)) return;
     e.preventDefault();
     e.stopPropagation();

@@ -12,6 +12,7 @@
 //   removed when an item is removed or clear() is called, and replaced on add.
 
 import { WISP_UI_DATA_ATTRIBUTE } from "./constants.js";
+import { snapToVisible } from "./picker.js";
 import type {
   MultiSelectModule,
   PickResult,
@@ -146,9 +147,13 @@ export interface AttachMultiSelectOptions {
 export function attachMultiSelect(opts: AttachMultiSelectOptions): () => void {
   const handleClick = (e: MouseEvent): void => {
     if (!isCmdOrCtrl(e)) return;
-    const target = e.target;
-    if (!(target instanceof HTMLElement)) return;
-    if (target.closest(`[${WISP_UI_DATA_ATTRIBUTE}]`) !== null) return;
+    const raw = e.target;
+    if (!(raw instanceof HTMLElement)) return;
+    if (raw.closest(`[${WISP_UI_DATA_ATTRIBUTE}]`) !== null) return;
+    // Phase 7.19 — same snap as the picker: opacity:0 hit-areas resolve to
+    // the visible ancestor so ⌘-clicks capture the whole widget.
+    const snapped = snapToVisible(raw);
+    const target = snapped instanceof HTMLElement ? snapped : raw;
 
     e.preventDefault();
     e.stopPropagation();

@@ -33,7 +33,7 @@ export const WISP_VARIANT_DATA_ATTRIBUTE = "data-wisp-variant";
 export const WISP_CSS_DATA_ATTRIBUTE = "data-wisp-css";
 export const WISP_SESSION_DATA_ATTRIBUTE = "data-wisp-session";
 
-export const LIVE_JS_VERSION_TAG = "0.11.3-prerelease";
+export const LIVE_JS_VERSION_TAG = "0.11.4-prerelease";
 
 // Bridge enforces 4000 chars on `ConfigureEventSchema`. Mirrored here so the
 // floating bar can show a counter without round-tripping.
